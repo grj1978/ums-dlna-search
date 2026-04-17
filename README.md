@@ -1,5 +1,7 @@
 # ums-dlna-search
 
+**GitHub:** https://github.com/grj1978/ums-dlna-search | **Docker Hub:** https://hub.docker.com/r/grj1978/ums-dlna-search
+
 A fork of [Universal Media Server][10] with a Python-based DLNA search engine designed for **music libraries**.
 
 This fork replaces UMS's built-in search with a fast, SQLite-backed search engine (`search.py` + `index_media.py`) that is purpose-built for music. It was developed specifically for the **WiiM** family of music streamers, but should work with any DLNA renderer that uses `Search()` requests.
@@ -29,6 +31,12 @@ services:
     image: grj1978/ums-dlna-search:latest
     container_name: ums
     network_mode: host   # Required for SSDP/UPnP multicast discovery
+    # Ports are bound automatically via host networking — no explicit mapping needed.
+    # Listed here for firewall/documentation purposes:
+    #   9001/tcp  — UMS web UI
+    #   5001/tcp  — DLNA HTTP media server
+    #   9002/tcp  — Internal reindex API (loopback only)
+    #   1900/udp  — SSDP/UPnP discovery (multicast)
     environment:
       # Hostname or IP this server advertises in SSDP/UPnP packets.
       # Must be an address reachable by your DLNA renderers.
