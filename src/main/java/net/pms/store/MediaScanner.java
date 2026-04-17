@@ -47,6 +47,7 @@ import net.pms.store.container.DVDISOFile;
 import net.pms.store.container.PlaylistFolder;
 import net.pms.store.container.RealFolder;
 import net.pms.store.item.RealFile;
+import net.pms.plugins.python.PythonBridge;
 import net.pms.util.FileUtil;
 import net.pms.util.FileWatcher;
 import net.pms.util.InputFile;
@@ -212,6 +213,7 @@ public class MediaScanner implements SharedContentListener {
 						start = System.currentTimeMillis();
 						MediaDatabase.analyzeDb();
 						LOGGER.info("Database analyze completed in {} seconds", ((System.currentTimeMillis() - start) / 1000));
+						PythonBridge.triggerReindex();
 					}
 				} catch (Exception e) {
 					LOGGER.error("Unhandled exception during media scan: {}", e.getMessage());
@@ -594,6 +596,7 @@ public class MediaScanner implements SharedContentListener {
 					LOGGER.warn("unknown event : {}", event);
 				}
 			}
+			PythonBridge.scheduleDebouncedReindex();
 		}
 	};
 

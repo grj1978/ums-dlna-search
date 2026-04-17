@@ -3648,6 +3648,9 @@
 											  tofile="${project.basedir}/target/docker/Dockerfile" overwrite="true" />
 										<copy file="${project.external-resources}/docker/Dockerfile-alpine"
 											  tofile="${project.basedir}/target/docker/Dockerfile-alpine" overwrite="true" />
+										<!-- Ship a default SHARED.conf so the container shares /media on first run -->
+										<copy file="${project.external-resources}/docker/profile/SHARED.conf"
+											  tofile="${project.basedir}/target/docker/profile/SHARED.conf" overwrite="true" />
 										<copy file="${project.basedir}/target/${project.artifactId}-${project.version}-jar-with-dependencies.jar"
 											  tofile="${project.basedir}/target/docker/app/${project.artifactId}.jar" overwrite="true" />
 										<copy todir="${project.basedir}/target/docker/app">

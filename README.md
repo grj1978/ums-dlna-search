@@ -1,86 +1,132 @@
-# Universal Media Server
-![Universal Media Server CI](https://github.com/UniversalMediaServer/UniversalMediaServer/workflows/CI/badge.svg) [![Crowdin](https://badges.crowdin.net/universalmediaserver/localized.svg)](https://crowdin.com/project/universalmediaserver)
+# ums-dlna-search
 
-[<img align="right" src="https://github.com/UniversalMediaServer/UniversalMediaServer/blob/main/src/main/resources/images/logo.png?raw=true" alt="Universal Media Server" width="256" height="auto"/>][1] 
-Universal Media Server is a DLNA, UPnP and HTTP/S Media Server.
-It is capable of sharing video, audio and images between most modern devices.
-It was originally based on PS3 Media Server by shagrath, in order to ensure greater stability and file-compatibility.
+A fork of [Universal Media Server][10] with a Python-based DLNA search engine designed for **music libraries**.
 
-Universal Media Server supports all major operating systems, with versions for Windows, Linux and macOS.
-The program streams or transcodes many different media formats with little or no configuration.
-It is powered by [FFmpeg][27], [MediaInfo][28], [Crowdin][29], [MEncoder][26], tsMuxeR, AviSynth, VLC, and more, which combine to offer support for a wide range of media formats.
+This fork replaces UMS's built-in search with a fast, SQLite-backed search engine (`search.py` + `index_media.py`) that is purpose-built for music. It was developed specifically for the **WiiM** family of music streamers, but should work with any DLNA renderer that uses `Search()` requests.
 
-## Current Project Members
+> **Music-only scope:** The Python search engine handles audio classes only. DLNA `Search()` requests for video or other non-audio media are passed through to UMS's built-in browse-based fallback rather than the Python engine — results will be functional but basic (folder-name matching, no metadata search). UMS's original SQL-backed search for non-audio has been removed as part of replacing `SearchRequestHandler`. Normal DLNA *browsing* and streaming of all file types is handled by upstream UMS and is completely unaffected.
 
-* [ik666][32]
-* [mik_s][7]
-* [SubJunk][3]
-* [SurfaceS][33]
-* [valib][5]
+## What this fork adds
 
-## Sponsors
+- **Python search engine** — replaces the upstream H2/SQL search with a lightweight SQLite index built by `index_media.py`. Handles artist, album, track, and playlist search tabs.
+- **Album art in search results** — embedded cover art is extracted once per album at index time and served via a dedicated `/cover/*` HTTP endpoint, so album thumbnails appear correctly in search results and playlists.
+- **Playlist support** — `.m3u`/`.m3u8` playlists are indexed and browsable as playlist containers with full track metadata.
+- **WiiM search fix** — the WiiM sends noisy cross-field OR queries (e.g. artist search also matches track titles). This fork restricts each search tab to only the field that makes sense. See the [DLNA Search Behavior](#-dlna-search-behavior-wiim--renderer-override) section below.
+- **Docker-first deployment** — ships as a single Docker image with no external dependencies beyond a media volume.
 
-* [Architecture of Sales][35]
+## Docker deployment
 
-[Become a sponsor][36]
+The easiest way to deploy is to pull the pre-built image from Docker Hub and drop the compose block below into your stack.
 
-## Links
+### docker-compose.yml
 
-* [Website][1]
-* [Forum][9]
-* [Source code][10]
-* [Official Releases][11]
-* [Issue tracker][12]
-* [Knowledge Base][13]
-* [Infrastructure status][37]
-* [Comparison of popular media servers][2]
+```yaml
+volumes:
+  ums_profile:        # Persistent profile: SQLite index + extracted cover art
 
-## Thanks
+services:
+  ums:
+    image: grj1978/ums-dlna-search:latest
+    container_name: ums
+    network_mode: host   # Required for SSDP/UPnP multicast discovery
+    environment:
+      # Hostname or IP this server advertises in SSDP/UPnP packets.
+      # Must be an address reachable by your DLNA renderers.
+      # The entrypoint resolves this name to an IP and injects it into UMS.conf.
+      - UMS_HOSTNAME=your-server-hostname-or-ip  # REQUIRED
 
-##### Thanks for major code contributions:
+      # Friendly name shown to DLNA clients. Default: "Universal Media Server"
+      # - UMS_SERVER_NAME=MyMusicServer
 
-* chocolateboy
-* ditlew
-* ExSport
-* happy.neko
-* [infidel][6]
-* [js-kyle][31]
-* [Nadahar][15]
-* Raptor399
-* Redlum
-* renszarv
-* [SharkHunter][4]
-* skeptical
-* taconaut
-* tcox
-* [threedguru][34]
-* tomeko
+      # Override the profile directory inside the container. Default: /profile
+      # Change this if you want to mount the profile at a different path.
+      # - UMS_PROFILE=/profile
+    volumes:
+      - ums_profile:/profile          # Persistent profile (index DB + cover cache)
+      - /path/to/your/music:/media:ro # Your music library (read-only recommended)
+    restart: unless-stopped
+```
 
-##### Thanks for documentation and contributions to the community:
+Then start it:
 
-* DeFlanko
-* meskibob
-* Optimus_prime
-* otmanix
-* [squadjot][30]
+```bash
+docker compose pull ums && docker compose up -d ums
+```
 
-##### Thanks for significant/frequent language translations:
+### Building from source
 
-* [AlfredoRamos][19]
-* [josepma][16]
-* [kaolsz][23]
-* [Kirvx][17]
-* [leroy][18]
-* [OnarEngincan][22]
-* [prescott_sk][24]
-* [squadjot][21]
-* [Tianuchka][20]
+If you want to modify the code or build your own image:
 
-##### Special Thanks:
+```bash
+# 1. Build the Java project (required after any Java change; skip for Python-only changes)
+cd /path/to/ums-dlna-search
+mvn clean package -Dmaven.test.skip=true
 
-* boblinds and snoots for the network test cases :)
-* sarraken, bleuecinephile, bd.azerty, fabounnet for the support and feedback
-* ...And you!
+# 2. Build and start with a local image
+# In your docker-compose.yml, replace the image line with:
+#   image: ums-dlna-search:local
+#   build:
+#     context: /path/to/ums-dlna-search
+#     dockerfile: /path/to/host_service/ums/Dockerfile
+#     additional_contexts:
+#       dockerconfig: /path/to/host_service/ums
+docker compose build ums && docker compose up -d ums
+```
+
+### First-run indexing
+
+On first start (or after deleting `/profile/database/media_index.db`), `index_media.py` performs a full rebuild:
+- Walks all audio files under `/media`
+- Reads ID3/FLAC/MP4 tags via `mutagen`
+- Extracts one cover image per album into `/profile/cache/covers/`
+- Writes the SQLite index to `/profile/database/media_index.db`
+
+Subsequent starts do a fast incremental scan — only files with changed modification times are re-read. Monitor progress with:
+
+```bash
+docker logs -f ums 2>&1 | grep -i "python\|index\|scanned"
+```
+
+---
+
+## 🔍 DLNA Search Behavior (WiiM / Renderer Override)
+
+This fork includes a custom Python-based DLNA search backend (`search.py`) that replaces UMS's built-in search engine. It is designed for music libraries and was specifically tuned for the **WiiM** music streamer, which sends DLNA `Search()` SOAP requests with cross-field OR conditions that produce noisy, unhelpful results with a standard DLNA server.
+
+### What the WiiM actually asks for
+
+On each search tab the WiiM sends an `upnp:class`-scoped query with an OR across multiple fields, for example:
+
+| Tab | WiiM's SOAP `SearchCriteria` |
+|-----|------------------------------|
+| Artists | `upnp:class derivedfrom "object.person.musicArtist" and (upnp:artist contains "X" or dc:title contains "X")` |
+| Albums | `upnp:class derivedfrom "object.container.album.musicAlbum" and (upnp:album contains "X" or dc:title contains "X" or upnp:artist contains "X")` |
+| Tracks | `upnp:class derivedfrom "object.item.audioItem" and (dc:title contains "X" or upnp:artist contains "X" or upnp:album contains "X")` |
+
+The OR conditions mean that, for example, an artist-tab search for "Love" would return artist containers for any artist whose *track title* also happens to contain "Love" — which is almost always useless noise.
+
+### What this fork does instead
+
+The cross-field OR conditions are intentionally ignored. Each tab is restricted to only the field that makes sense for that result type:
+
+| Tab | Fields actually searched |
+|-----|--------------------------|
+| Artists | `artist`, `album_artist`, and `composer` DB columns (all three creator fields) |
+| Albums | `upnp:album` only |
+| Tracks | `dc:title` only |
+
+The `upnp:class` value still controls what *type* of result is returned (artist containers, album containers, or track items). Only the field-matching logic is overridden.
+
+> **Note for other users:** This behavior is an intentional departure from strict DLNA compliance. If your renderer sends well-formed, single-field search criteria you may want to remove these restrictions in `search.py`.
+
+---
+
+## Upstream: Universal Media Server
+
+This project is a fork of [Universal Media Server][10] by the UMS team.
+All core DLNA/UPnP streaming, transcoding, renderer detection, and web UI are upstream UMS code — this fork only adds the search engine and Docker deployment layer.
+
+**Upstream project members:** [ik666][32], [mik_s][7], [SubJunk][3], [SurfaceS][33], [valib][5] — and [many contributors][10].
 
 ---
 

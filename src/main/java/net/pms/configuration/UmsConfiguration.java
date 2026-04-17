@@ -393,6 +393,7 @@ public class UmsConfiguration extends BaseConfiguration {
 	private static final String KEY_PRETTIFY_FILENAMES = "prettify_filenames";
 	private static final String KEY_PREVENT_SLEEP = "prevent_sleep";
 	private static final String KEY_PROFILE_NAME = "name";
+	private static final String KEY_PYTHON_INDEX_REFRESH_MINUTES = "python_index_refresh_minutes";
 	private static final String KEY_RENDERER_DEFAULT = "renderer_default";
 	private static final String KEY_RENDERER_FORCE_DEFAULT = "renderer_force_default";
 	private static final String KEY_RENDERERS_FILTER = "renderers_filter";
@@ -3799,6 +3800,17 @@ public class UmsConfiguration extends BaseConfiguration {
 	private List<String> ignoredSystemFolderNames = List.of(".unwanted", "$RECYCLE.BIN", "System Volume Information", "CacheClip");
 
 	/**
+	 * How often (in minutes) the Python media index should be rebuilt.
+	 * 0 disables periodic refresh; the index is still built once on startup.
+	 * Default is 360 (6 hours).
+	 *
+	 * @return the refresh interval in minutes
+	 */
+	public int getPythonIndexRefreshMinutes() {
+		return getInt(KEY_PYTHON_INDEX_REFRESH_MINUTES, 1440);
+	}
+
+	/**
 	 * @return The {@link List} of {@link Path}s of ignored folder names.
 	 */
 	@Nonnull
@@ -5952,6 +5964,7 @@ public class UmsConfiguration extends BaseConfiguration {
 		jObj.addProperty(KEY_NUMBER_OF_CPU_CORES, numberOfCpuCores);
 		jObj.addProperty(KEY_SERVER_PORT, 5001);
 		jObj.addProperty(KEY_PRETTIFY_FILENAMES, false);
+		jObj.addProperty(KEY_PYTHON_INDEX_REFRESH_MINUTES, 1440);
 		jObj.addProperty(KEY_RENDERER_DEFAULT, "");
 		jObj.addProperty(KEY_RENDERER_FORCE_DEFAULT, false);
 		jObj.addProperty(KEY_RESUME, true);

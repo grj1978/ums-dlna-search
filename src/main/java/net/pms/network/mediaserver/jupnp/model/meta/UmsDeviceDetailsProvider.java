@@ -31,8 +31,8 @@ import org.jupnp.model.types.DLNADoc;
 public class UmsDeviceDetailsProvider implements DeviceDetailsProvider {
 	private static final UmsConfiguration CONFIGURATION = PMS.getConfiguration();
 
-	private static final String MANUFACTURER_NAME = "Universal Media Server";
-	private static final String MANUFACTURER_URL = "https://www.universalmediaserver.com/";
+	private static final String MANUFACTURER_NAME = "Twonky";
+	private static final String MANUFACTURER_URL = "http://www.twonky.com/";
 	private static final ManufacturerDetails MANUFACTURER_DETAILS = new ManufacturerDetails(MANUFACTURER_NAME, MANUFACTURER_URL);
 	private static final String MODEL_NUMBER = PropertiesUtil.getProjectProperties().get("project.version");
 	private	static final DLNADoc[] DLNA_DOCS = new DLNADoc[] {new DLNADoc("DMS", DLNADoc.Version.V1_5), new DLNADoc("M-DMS", DLNADoc.Version.V1_5)};

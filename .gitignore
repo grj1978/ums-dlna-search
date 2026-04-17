@@ -2,6 +2,8 @@
 contrib/ffmpeg/build
 /database
 debug.log
+*.log
+*.bak
 .DS_Store
 .idea/
 libmediainfo.dylib
@@ -19,6 +21,7 @@ target/
 win32/
 portable/
 .vscode/settings.json
+*.code-workspace
 /src/main/pascal/ctrlsender/lib/
 /src/main/pascal/ctrlsender/backup/
 /src/main/pascal/ctrlsender/*.exe
@@ -54,3 +57,5 @@ react-client/test-results/
 react-client/tests/*/
 ums-testserver.jar
 /osx
+/wireshark
+

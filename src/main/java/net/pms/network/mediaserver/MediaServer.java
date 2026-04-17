@@ -223,7 +223,7 @@ public class MediaServer {
 			sb.append(System.getProperty("os.arch").replace(" ", "_"));
 			sb.append('-');
 			sb.append(System.getProperty("os.version").replace(" ", "_"));
-			sb.append(", UPnP/1.0 DLNADOC/1.50, UMS/").append(PMS.getVersion());
+			sb.append(", UPnP/1.0 DLNADOC/1.50, Twonky/").append("8.5.0");
 			serverName = sb.toString();
 		}
 		return serverName;

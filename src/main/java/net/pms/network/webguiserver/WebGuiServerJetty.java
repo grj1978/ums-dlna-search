@@ -29,6 +29,7 @@ import net.pms.network.webguiserver.servlets.I18nApiServlet;
 import net.pms.network.webguiserver.servlets.LogsApiServlet;
 import net.pms.network.webguiserver.servlets.PlayerApiServlet;
 import net.pms.network.webguiserver.servlets.RenderersApiServlet;
+import net.pms.network.webguiserver.servlets.ReindexApiServlet;
 import net.pms.network.webguiserver.servlets.SettingsApiServlet;
 import net.pms.network.webguiserver.servlets.SharedContentApiServlet;
 import net.pms.network.webguiserver.servlets.WebGuiServlet;
@@ -77,6 +78,7 @@ public class WebGuiServerJetty extends WebGuiServer {
 		addServlet(servletHandler, LogsApiServlet.class);
 		addServlet(servletHandler, PlayerApiServlet.class);
 		addServlet(servletHandler, RenderersApiServlet.class);
+		addServlet(servletHandler, ReindexApiServlet.class);
 		addServlet(servletHandler, SettingsApiServlet.class);
 		addServlet(servletHandler, SharedContentApiServlet.class);
 		addServlet(servletHandler, WebGuiServlet.class);

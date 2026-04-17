@@ -99,6 +99,10 @@
 	<logger name="oshi" level="WARN" />
 	<logger name="org.eclipse.jetty" level="WARN" />
 	<logger name="com.zaxxer.hikari" level="INFO" />
+	<!-- Enable verbose jUPnP/UPnP control logging for debugging incoming SOAP actions -->
+	<logger name="org.jupnp" level="TRACE" />
+	<logger name="org.jupnp.transport" level="TRACE" />
+	<logger name="org.jupnp.model" level="TRACE" />
 
 	<!-- Root logger defines the minimum log level for all loggers -->
 	<root level="${rootLevel}">

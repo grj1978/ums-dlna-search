@@ -241,7 +241,7 @@ public class SpeedStats {
 			int c = 0;
 			String timeString;
 
-			for (String line : ls) {
+			for (String line : ls != null ? ls : List.<String>of()) {
 				timeString = sysUtil.parsePingLine(line);
 				if (timeString == null) {
 					continue;

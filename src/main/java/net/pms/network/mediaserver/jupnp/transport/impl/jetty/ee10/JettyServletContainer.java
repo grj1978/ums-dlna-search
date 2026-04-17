@@ -132,6 +132,23 @@ public class JettyServletContainer implements JakartaServletContainerAdapter {
 		}
 	}
 
+	/**
+	 * Register an additional servlet on the media server port.
+	 * Intended for plugins that need to expose HTTP endpoints alongside UPnP.
+	 */
+	public synchronized void addPluginServlet(String name, Servlet servlet, String pathSpec) {
+		if (server.getHandler() instanceof ContextHandlerCollection contextHandlers) {
+			for (org.eclipse.jetty.server.Handler h : contextHandlers.getHandlers()) {
+				if (h instanceof ServletContextHandler servletHandler) {
+					servletHandler.addServlet(new ServletHolder(name, servlet), pathSpec);
+					LOGGER.info("Plugin servlet '{}' registered at {}", name, pathSpec);
+					return;
+				}
+			}
+		}
+		LOGGER.warn("Could not register plugin servlet '{}': server handler not ready", name);
+	}
+
 	@Override
 	public synchronized void stopIfRunning() {
 		if (!server.isStopped() && !server.isStopping()) {

@@ -167,18 +167,25 @@ public class UmsContentDirectoryService {
 	public final static String EMPTY_FILE_CONTENT = "<UPLOAD RESOURCE>";
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(UmsContentDirectoryService.class);
-	private static final List<String> CAPS_SEARCH = List.of();
+	private static final List<String> CAPS_SEARCH = List.of(
+    "dc:title",
+    "upnp:artist",
+    "upnp:album",
+    "dc:creator",
+    "upnp:genre"
+	);
 	private static final List<String> CAPS_SORT = List.of("upnp:class", "dc:title", "dc:creator", "upnp:artist", "upnp:album", "upnp:genre");
 	private static final String CRLF = "\r\n";
 
 	private final Timer systemUpdateIdTimer = new Timer("jupnp-contentdirectory-service");
 	private final TimerTask systemUpdateIdTask;
 
-	@UpnpStateVariable(sendEvents = false)
+	@UpnpStateVariable(name = "SearchCapabilities", sendEvents = false, datatype = "string")
 	private final CSV<String> searchCapabilities = new CSVString();
 
-	@UpnpStateVariable(sendEvents = false)
+	@UpnpStateVariable(name = "SortCapabilities", sendEvents = false, datatype = "string")
 	private final CSV<String> sortCapabilities = new CSVString();
+
 
 	@UpnpStateVariable(
 			sendEvents = true,
@@ -211,16 +218,16 @@ public class UmsContentDirectoryService {
 		systemUpdateIdTimer.schedule(systemUpdateIdTask, 0, 200);
 	}
 
-	@UpnpAction(out =
-			@UpnpOutputArgument(name = "SearchCaps")
-	)
+	    @UpnpAction(out =
+		    @UpnpOutputArgument(name = "SearchCaps", stateVariable = "SearchCapabilities")
+	    )
 	public CSV<String> getSearchCapabilities() {
 		return searchCapabilities;
 	}
 
-	@UpnpAction(out =
-			@UpnpOutputArgument(name = "SortCaps")
-	)
+	    @UpnpAction(out =
+		    @UpnpOutputArgument(name = "SortCaps", stateVariable = "SortCapabilities")
+	    )
 	public CSV<String> getSortCapabilities() {
 		return sortCapabilities;
 	}
@@ -755,6 +762,33 @@ public class UmsContentDirectoryService {
 			objectID = "0";
 		}
 
+		// Delegate Browse for Python-generated synthetic container IDs (artist:/album:)
+		if (objectID.startsWith("artist:") || objectID.startsWith("album:") || objectID.startsWith("playlist:")) {
+			try {
+				String browseCriteria = "__browse__ " + objectID;
+				SearchRequestHandler handler = new SearchRequestHandler();
+				net.pms.network.mediaserver.handlers.message.SearchRequest sr =
+						new net.pms.network.mediaserver.handlers.message.SearchRequest();
+				sr.setContainerId(objectID);
+				sr.setSearchCriteria(browseCriteria);
+				sr.setFilter(filter);
+				sr.setStartingIndex((int) startingIndex);
+				sr.setRequestedCount((int) requestedCount);
+				sr.setSortCriteria(null);
+				org.jupnp.support.model.SearchResult searchResult = handler.createSearchResult(sr, renderer);
+				long containerUpdateID = net.pms.store.MediaStoreIds.getSystemUpdateId().getValue();
+				return new BrowseResult(
+						searchResult.getResult(),
+						searchResult.getCountLong(),
+						searchResult.getTotalMatchesLong(),
+						containerUpdateID
+				);
+			} catch (Exception e) {
+				LOGGER.error("Python browse failed for objectID '{}': {}", objectID, e.getMessage());
+				throw new ContentDirectoryException(ContentDirectoryErrorCode.NO_SUCH_OBJECT);
+			}
+		}
+
 		boolean browseDirectChildren = browseFlag == BrowseFlag.DIRECT_CHILDREN;
 
 		List<StoreResource> resources = renderer.getMediaStore().getResources(
@@ -874,38 +908,43 @@ public class UmsContentDirectoryService {
 			return null;
 		}
 
-		try {
-			DbIdMediaType requestType = SearchRequestHandler.getRequestType(searchCriteria);
-			int totalMatches = SearchRequestHandler.getLibraryResourceCountFromSQL(SearchRequestHandler.convertToCountSql(searchCriteria, requestType, containerId));
-			String sqlFiles = SearchRequestHandler.convertToFilesSql(searchCriteria, startingIndex, requestedCount, orderBy, requestType, containerId);
-			List<StoreResource> resultResources = SearchRequestHandler.getLibraryResourceFromSQL(renderer, sqlFiles, requestType);
-
-			long containerUpdateID = MediaStoreIds.getSystemUpdateId().getValue();
-			LOGGER.trace("Creating DIDL result");
-			String result;
-			if (renderer.getUmsConfiguration().isUpnpJupnpDidl()) {
-				result = getJUPnPDidlResults(resultResources, filter);
-			} else {
-				result = DidlHelper.getDidlResults(resultResources);
+		// Delegate audio/music searches to the Python-backed handler.
+		// All other classes (video, image, etc.) fall through to the original UMS search path.
+		if (isAudioSearchCriteria(searchCriteria)) {
+			try {
+				SearchRequestHandler handler = new SearchRequestHandler();
+				net.pms.network.mediaserver.handlers.message.SearchRequest sr = new net.pms.network.mediaserver.handlers.message.SearchRequest();
+				sr.setContainerId(containerId);
+				sr.setSearchCriteria(searchCriteria);
+				sr.setFilter(filter);
+				sr.setStartingIndex((int) startingIndex);
+				sr.setRequestedCount((int) requestedCount);
+				sr.setSortCriteria(null);
+				return handler.createSearchResult(sr, renderer);
+			} catch (Exception e) {
+				LOGGER.error("Python search failed", e);
+				return new SearchResult("", 0, 0, 0);
 			}
-			LOGGER.trace("DIDL result created");
-			if (renderer.getUmsConfiguration().isUpnpDebugMediaServer()) {
-				logDidlLiteResult(result);
-			}
-			LOGGER.trace("Returning search result");
-			return new SearchResult(result, resultResources.size(), totalMatches, containerUpdateID);
-		} catch (Exception e) {
-			LOGGER.trace("error transforming searchCriteria to SQL. Fallback to content browsing ...", e);
-			return searchToBrowse(
-					containerId,
-					searchCriteria,
-					filter,
-					startingIndex,
-					requestedCount,
-					orderBy,
-					renderer
-			);
 		}
+
+		return searchToBrowse(containerId, searchCriteria, filter, startingIndex, requestedCount, orderBy, renderer);
+	}
+
+	/**
+	 * Returns true if the DLNA SearchCriteria string targets an audio or music class —
+	 * the classes handled by our Python search engine. All other classes (video, image, etc.)
+	 * are handled by the original UMS search path.
+	 */
+	private static boolean isAudioSearchCriteria(String searchCriteria) {
+		if (searchCriteria == null) {
+			return false;
+		}
+		String lc = searchCriteria.toLowerCase();
+		return lc.contains("audioitem")
+			|| lc.contains("musictrack")
+			|| lc.contains("musicartist")
+			|| lc.contains("musicalbum")
+			|| lc.contains("playlistcontainer");
 	}
 
 	private SearchResult searchToBrowse(
