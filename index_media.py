@@ -278,22 +278,22 @@ def rebuild_playlists(conn):
     return len(to_insert), len(to_update), len(deleted_ids)
 
 
-def full_rebuild(conn):
-    """Drop and recreate the files table, then index everything from scratch.
-    The DB is unavailable for searches while the DROP is in flight, so this
-    is only used on schema-version changes / first run."""
-    conn.execute("DROP TABLE IF EXISTS files")
-    conn.execute("DROP TABLE IF EXISTS albums")
-    conn.execute("DROP TABLE IF EXISTS playlists")
-    conn.execute("DROP INDEX IF EXISTS idx_artist")
-    conn.execute("DROP INDEX IF EXISTS idx_album_artist")
-    conn.execute("DROP INDEX IF EXISTS idx_composer")
-    conn.execute("DROP INDEX IF EXISTS idx_album")
-    conn.execute("DROP INDEX IF EXISTS idx_title")
-    conn.execute("DROP INDEX IF EXISTS idx_genre")
-    conn.execute("DROP INDEX IF EXISTS idx_relpath")
-    conn.execute("DROP INDEX IF EXISTS idx_playlist_name")
-    conn.executescript(CREATE_SCHEMA)
+def full_rebuild():
+    """Build a fresh index into a temp DB file, then atomically replace the live DB.
+    The live DB is never locked or modified until the instant of the rename,
+    so searches continue uninterrupted throughout the entire scan."""
+    tmp_path = DB_PATH + '.building'
+    # Clean up any leftover temp files from a previous interrupted build
+    for suffix in ('', '-wal', '-shm'):
+        try:
+            os.remove(tmp_path + suffix)
+        except FileNotFoundError:
+            pass
+
+    tmp_conn = sqlite3.connect(tmp_path)
+    tmp_conn.execute("PRAGMA journal_mode=DELETE")  # no WAL needed; single writer, temp file
+    tmp_conn.execute("PRAGMA synchronous=OFF")       # faster bulk load; file is throwaway if crash
+    tmp_conn.executescript(CREATE_SCHEMA)
 
     # Track which (artist, album) pairs have already had cover art extracted
     # so we only extract once per album during a full rebuild.
@@ -317,19 +317,31 @@ def full_rebuild(conn):
         if verbose and total % 1000 == 0:
             print(f"Scanned {total} files in {time.time()-started:.1f}s ...", flush=True)
 
-    conn.executemany(
+    tmp_conn.executemany(
         "INSERT INTO files (artist, album_artist, composer, album, title, genre, filename, relpath, fullpath, media_root, mime, track_number, mtime) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rows
     )
-    conn.executemany(
+    tmp_conn.executemany(
         "INSERT OR REPLACE INTO albums (artist, album, cover_art, genre) VALUES (?, ?, ?, ?)",
         [(k[0], k[1], v[0], v[1]) for k, v in covered_albums.items()]
     )
-    conn.execute("INSERT OR REPLACE INTO metadata VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
-    conn.execute("INSERT OR REPLACE INTO metadata VALUES ('indexed_at',      ?)", (str(int(time.time())),))
-    rebuild_playlists(conn)
-    conn.commit()
+    tmp_conn.execute("INSERT OR REPLACE INTO metadata VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+    tmp_conn.execute("INSERT OR REPLACE INTO metadata VALUES ('indexed_at',      ?)", (str(int(time.time())),))
+    rebuild_playlists(tmp_conn)
+    tmp_conn.commit()
+    tmp_conn.close()
+
+    # Atomically replace the live DB — searches using the old file via open
+    # inodes continue unaffected; new open_db() calls see the fresh file.
+    os.replace(tmp_path, DB_PATH)
+    # Remove stale WAL/SHM from the old DB so SQLite doesn't misread them.
+    for suffix in ('-wal', '-shm'):
+        try:
+            os.remove(DB_PATH + suffix)
+        except FileNotFoundError:
+            pass
+
     return total, 0, 0
 
 
@@ -383,18 +395,23 @@ def incremental_update(conn):
     # Files in DB that no longer exist on disk
     deleted_ids = [existing[fp][0] for fp in existing if fp not in seen_fullpaths]
 
-    if to_insert:
+    # Commit in small batches so the write lock window per transaction is short,
+    # keeping searches responsive throughout the incremental scan.
+    BATCH = 500
+    for i in range(0, len(to_insert), BATCH):
         conn.executemany(
             "INSERT INTO files (artist, album_artist, composer, album, title, genre, filename, relpath, fullpath, media_root, mime, track_number, mtime) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            to_insert
+            to_insert[i:i + BATCH]
         )
-    if to_update:
+        conn.commit()
+    for i in range(0, len(to_update), BATCH):
         conn.executemany(
             "UPDATE files SET artist=?, album_artist=?, composer=?, album=?, title=?, genre=?, "
             "filename=?, relpath=?, media_root=?, mime=?, track_number=?, mtime=? WHERE id=?",
-            to_update
+            to_update[i:i + BATCH]
         )
+        conn.commit()
     if album_covers:
         conn.executemany(
             "INSERT INTO albums (artist, album, cover_art, genre) VALUES (?, ?, ?, ?)"
@@ -403,12 +420,16 @@ def incremental_update(conn):
             " genre = CASE WHEN excluded.genre != '' THEN excluded.genre ELSE genre END",
             [(k[0], k[1], v[0], v[1]) for k, v in album_covers.items()]
         )
-    if deleted_ids:
-        conn.executemany("DELETE FROM files WHERE id=?", [(i,) for i in deleted_ids])
+        conn.commit()
+    for i in range(0, len(deleted_ids), BATCH):
+        conn.executemany("DELETE FROM files WHERE id=?", [(x,) for x in deleted_ids[i:i + BATCH]])
+        conn.commit()
 
-    conn.execute("INSERT OR REPLACE INTO metadata VALUES ('indexed_at', ?)", (str(int(time.time())),))
-    rebuild_playlists(conn)
-    conn.commit()
+    pl_added, pl_updated, pl_removed = rebuild_playlists(conn)
+    changed_count = len(to_insert) + len(to_update) + len(deleted_ids) + pl_added + pl_updated + pl_removed
+    if changed_count > 0:
+        conn.execute("INSERT OR REPLACE INTO metadata VALUES ('indexed_at', ?)", (str(int(time.time())),))
+        conn.commit()
     return scanned, len(to_insert) + len(to_update), len(deleted_ids)
 
 
@@ -422,17 +443,23 @@ if not MEDIA_ROOTS:
 t0 = time.time()
 conn = open_db()
 try:
-    if needs_rebuild(conn):
-        if verbose:
-            print(f"Schema mismatch or first run — full rebuild at {DB_PATH}", flush=True)
-        total, added, removed = full_rebuild(conn)
-        elapsed = time.time() - t0
-        print(f"Full rebuild: {total} files in {elapsed:.1f}s → {DB_PATH}", flush=True)
-    else:
+    do_full = needs_rebuild(conn)
+finally:
+    conn.close()
+
+if do_full:
+    if verbose:
+        print(f"Schema mismatch or first run — full rebuild at {DB_PATH}", flush=True)
+    total, added, removed = full_rebuild()
+    elapsed = time.time() - t0
+    print(f"Full rebuild: {total} files in {elapsed:.1f}s → {DB_PATH}", flush=True)
+else:
+    conn = open_db()
+    try:
         if verbose:
             print(f"Incremental update at {DB_PATH}", flush=True)
         scanned, changed, removed = incremental_update(conn)
-        elapsed = time.time() - t0
-        print(f"Incremental update: scanned {scanned}, changed {changed}, removed {removed} in {elapsed:.1f}s → {DB_PATH}", flush=True)
-finally:
-    conn.close()
+    finally:
+        conn.close()
+    elapsed = time.time() - t0
+    print(f"Incremental update: scanned {scanned}, changed {changed}, removed {removed} in {elapsed:.1f}s → {DB_PATH}", flush=True)

@@ -46,6 +46,10 @@ services:
       # Friendly name shown to DLNA clients. Default: "Universal Media Server"
       # - UMS_SERVER_NAME=MyMusicServer
 
+      # How often to re-scan the media index, in minutes. Default: 1440 (24 hours)
+      # Set to 0 to disable periodic rescans entirely.
+      # - UMS_INDEX_REFRESH_MINUTES=1440
+
       # Override the profile directory inside the container. Default: /profile
       # Change this if you want to mount the profile at a different path.
       # - UMS_PROFILE=/profile

@@ -118,6 +118,8 @@ def find_cover_url(track_relpath, db_cover_art=''):
             (dir_prefix + '%',)
         ).fetchone()
         return make_url(row['relpath']) if row else None
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 
@@ -137,7 +139,7 @@ def open_db():
     if not os.path.exists(DB_PATH):
         return None
     try:
-        conn = sqlite3.connect(f'file:{DB_PATH}?mode=ro', uri=True)
+        conn = sqlite3.connect(f'file:{DB_PATH}?mode=ro', uri=True, timeout=1.0)
         conn.row_factory = sqlite3.Row
         return conn
     except sqlite3.OperationalError:
@@ -199,6 +201,8 @@ def query_files(conditions, use_or):
                 params
             ).fetchall()
         return rows
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 
@@ -220,6 +224,8 @@ def query_files_by_subpath(subpath):
             (subpath, prefix + '%')
         ).fetchall()
         return rows
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 
@@ -265,6 +271,8 @@ def query_files_by_artist(artist):
             "WHERE f.artist = ? OR f.album_artist = ?",
             (artist, artist)
         ).fetchall()
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 
@@ -281,6 +289,8 @@ def query_files_by_album(artist, album):
             "WHERE f.artist = ? AND f.album = ?",
             (artist, album)
         ).fetchall()
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 
@@ -432,6 +442,8 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
                                 "WHERE f.relpath = ?",
                                 (relpath,)
                             ).fetchone()
+                        except sqlite3.OperationalError:
+                            row = None
                         finally:
                             conn.close()
                     if row:
