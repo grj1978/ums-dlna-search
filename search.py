@@ -28,6 +28,8 @@ Config (environment variables):
 - MEDIA_ROOT: single root dir fallback for standalone testing
 - MEDIA_INDEX_DB: path to SQLite index (default: ~/.config/UMS/media_index.db)
 - UMS_MEDIA_HOST / UMS_MEDIA_PORT: used to build resource URLs
+- SEARCH_STRICT_CRITERIA: set to "true"/"1"/"yes" to honor renderer criteria as-is;
+  when unset or "false" the WiiM field-narrowing rules are applied (default)
 """
 
 import sys
@@ -67,6 +69,13 @@ def _default_db_path():
 
 DB_PATH     = os.environ.get('MEDIA_INDEX_DB', _default_db_path())
 COVER_CACHE = os.environ.get('COVER_CACHE_DIR', '')
+
+# When True, honor the renderer's SearchCriteria exactly — all conditions and
+# OR/AND logic are passed through unchanged.  When False (default), the WiiM
+# field-narrowing rules are applied: each search class is restricted to only
+# the fields that make sense for that result type.
+# Set SEARCH_STRICT_CRITERIA=1 to enable; 0 or unset = WiiM filtering (default).
+STRICT_SEARCH = os.environ.get('SEARCH_STRICT_CRITERIA', '0').strip() not in ('', '0', 'false', 'no')
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -150,20 +159,20 @@ def _condition_sql(field, value):
     """Return (sql_fragment, value) for a single field/value condition."""
     val = f'%{value}%'
     if field == 'upnp:artist':
-        return ("(lower(artist) LIKE lower(?) OR lower(album_artist) LIKE lower(?) OR lower(composer) LIKE lower(?))", [val, val, val])
+        return ("(lower(f.artist) LIKE lower(?) OR lower(f.album_artist) LIKE lower(?))", [val, val])
     elif field == 'upnp:albumartist':
-        return ("lower(album_artist) LIKE lower(?)", val)
+        return ("lower(f.album_artist) LIKE lower(?)", val)
     elif field == 'dc:creator':
         # dc:creator is used for both artist and composer depending on renderer
-        return ("(lower(artist) LIKE lower(?) OR lower(composer) LIKE lower(?))", [val, val])
+        return ("(lower(f.artist) LIKE lower(?) OR lower(f.composer) LIKE lower(?))", [val, val])
     elif field == 'upnp:album':
-        return ("lower(album) LIKE lower(?)", val)
+        return ("lower(f.album) LIKE lower(?)", val)
     elif field == 'dc:title':
-        return ("lower(title) LIKE lower(?)", val)
+        return ("lower(f.title) LIKE lower(?)", val)
     elif field == 'upnp:genre':
-        return ("lower(genre) LIKE lower(?)", val)
+        return ("lower(f.genre) LIKE lower(?)", val)
     else:
-        return ("lower(title) LIKE lower(?)", val)
+        return ("lower(f.title) LIKE lower(?)", val)
 
 
 def query_files(conditions, use_or):
@@ -568,15 +577,16 @@ if requested_class and 'playlistcontainer' in requested_class.lower():
 # Artist container search
 # ---------------------------------------------------------------------------
 if requested_class and 'musicartist' in requested_class.lower():
-    # Restrict to artist-field conditions only — match artist, album_artist, or composer.
-    # WiiM often sends OR conditions like (upnp:artist contains "x" or dc:title contains "x")
-    # which would otherwise match tracks by title and surface their artists as false positives.
-    artist_conds = [(f, v) for f, v in conditions
-                    if f in ('upnp:artist', 'upnp:albumartist', 'dc:creator')]
-    if artist_conds:
-        rows = query_files(artist_conds, True)  # OR across all artist fields
-        if rows is None:
-            emit_index_not_ready()
+    if not STRICT_SEARCH:
+        # Restrict to artist-field conditions only — match artist, album_artist, or composer.
+        # WiiM often sends OR conditions like (upnp:artist contains "x" or dc:title contains "x")
+        # which would otherwise match tracks by title and surface their artists as false positives.
+        artist_conds = [(f, v) for f, v in conditions
+                        if f in ('upnp:artist', 'upnp:albumartist', 'dc:creator')]
+        if artist_conds:
+            rows = query_files(artist_conds, True)  # OR across all artist fields
+            if rows is None:
+                emit_index_not_ready()
     artist_map = {}
     for row in rows:
         # Surface both artist and album_artist as separate artist entries
@@ -594,12 +604,13 @@ if requested_class and 'musicartist' in requested_class.lower():
 # Album container search
 # ---------------------------------------------------------------------------
 if requested_class and 'musicalbum' in requested_class.lower():
-    # Restrict to album-field conditions only — ignore artist/title OR conditions.
-    album_conds = [(f, v) for f, v in conditions if f == 'upnp:album']
-    if album_conds:
-        rows = query_files(album_conds, False)
-        if rows is None:
-            emit_index_not_ready()
+    if not STRICT_SEARCH:
+        # Restrict to album-field conditions only — ignore artist/title OR conditions.
+        album_conds = [(f, v) for f, v in conditions if f == 'upnp:album']
+        if album_conds:
+            rows = query_files(album_conds, False)
+            if rows is None:
+                emit_index_not_ready()
     album_map = {}
     album_sample_relpath = {}
     album_sample_cover = {}
@@ -633,7 +644,7 @@ _track_class = requested_class and (
     'audioitem' in requested_class.lower() or
     'musictrack' in requested_class.lower()
 )
-if _track_class:
+if _track_class and not STRICT_SEARCH:
     title_conds = [(f, v) for f, v in conditions if f == 'dc:title']
     if title_conds:
         rows = query_files(title_conds, False)

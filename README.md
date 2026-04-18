@@ -13,7 +13,7 @@ This fork replaces UMS's built-in search with a fast, SQLite-backed search engin
 - **Python search engine** — replaces the upstream H2/SQL search with a lightweight SQLite index built by `index_media.py`. Handles artist, album, track, and playlist search tabs.
 - **Album art in search results** — embedded cover art is extracted once per album at index time and served via a dedicated `/cover/*` HTTP endpoint, so album thumbnails appear correctly in search results and playlists.
 - **Playlist support** — `.m3u`/`.m3u8` playlists are indexed and browsable as playlist containers with full track metadata.
-- **WiiM search fix** — the WiiM sends noisy cross-field OR queries (e.g. artist search also matches track titles). This fork restricts each search tab to only the field that makes sense. See the [DLNA Search Behavior](#-dlna-search-behavior-wiim--renderer-override) section below.
+- **WiiM search fix** — the WiiM sends noisy cross-field OR queries (e.g. artist search also matches track titles). By default, this fork restricts each search tab to only the field that makes sense for that result type. See the [DLNA Search Behavior](#-dlna-search-behavior-wiim--renderer-override) section below for details and configuration.
 - **Docker-first deployment** — ships as a single Docker image with no external dependencies beyond a media volume.
 
 ## Docker deployment
@@ -49,6 +49,13 @@ services:
       # How often to re-scan the media index, in minutes. Default: 1440 (24 hours)
       # Set to 0 to disable periodic rescans entirely.
       # - UMS_INDEX_REFRESH_MINUTES=1440
+
+      # Search field filtering mode. Default: 0 (WiiM-focused filtering)
+      #   0 — WiiM-focused: each search tab is restricted to only the fields that
+      #        make sense for that result type.
+      #   1 — Strict mode: honor the renderer's SearchCriteria exactly as sent,
+      #        with no field filtering applied.
+      # - SEARCH_STRICT_CRITERIA=0
 
       # Override the profile directory inside the container. Default: /profile
       # Change this if you want to mount the profile at a different path.
@@ -87,13 +94,9 @@ docker compose build ums && docker compose up -d ums
 
 ### First-run indexing
 
-On first start (or after deleting `/profile/database/media_index.db`), `index_media.py` performs a full rebuild:
-- Walks all audio files under `/media`
-- Reads ID3/FLAC/MP4 tags via `mutagen`
-- Extracts one cover image per album into `/profile/cache/covers/`
-- Writes the SQLite index to `/profile/database/media_index.db`
+On first start (or after deleting `/profile/database/media_index.db`), `index_media.py` performs a full rebuild of the search index. This may take a minute or two for large libraries. Subsequent scans are incremental and only process changed files. See [How This Fork Works](#️-how-this-fork-works) for full details.
 
-Subsequent starts do a fast incremental scan — only files with changed modification times are re-read. Monitor progress with:
+Monitor indexing progress with:
 
 ```bash
 docker logs -f ums 2>&1 | grep -i "python\|index\|scanned"
@@ -123,17 +126,83 @@ The cross-field OR conditions are intentionally ignored. Each tab is restricted 
 
 | Tab | Fields actually searched |
 |-----|--------------------------|
-| Artists | `artist`, `album_artist`, and `composer` DB columns (all three creator fields) |
+| Artists | `artist` and `album_artist` DB columns |
 | Albums | `upnp:album` only |
 | Tracks | `dc:title` only |
 
 The `upnp:class` value still controls what *type* of result is returned (artist containers, album containers, or track items). Only the field-matching logic is overridden.
 
-> **Note for other users:** This behavior is an intentional departure from strict DLNA compliance. If your renderer sends well-formed, single-field search criteria you may want to remove these restrictions in `search.py`.
+> **Using a different renderer?** If your renderer sends well-formed, single-field search criteria, set `SEARCH_STRICT_CRITERIA=1` in your compose environment. All searches will still go through `search.py` — the SQLite index is always used — but the field-narrowing rules are skipped and the renderer's criteria are honored exactly as sent.
 
 ---
 
-## Upstream: Universal Media Server
+## ⚙️ How This Fork Works
+
+### Index lifecycle
+
+The Python search engine maintains a SQLite database (`media_index.db`) that is separate from UMS's own H2 browse database. Both are updated in sync — but they serve different purposes: UMS's database drives DLNA browsing and streaming, while the SQLite index drives `Search()` requests only.
+
+**Full rebuild** (first start, or after a schema change):
+- `index_media.py` builds a fresh index into a temporary file
+- The temporary file is atomically renamed over the live database at the end — so searches are never interrupted and never see a partially-built index
+- Cover art is extracted once per album during this phase
+
+**Incremental scan** (every subsequent start, and on a configurable timer):
+- Walks all files under `/media` and compares each file's mtime (modification timestamp — the filesystem's record of when a file was last changed) against what's stored in the index
+- Only files with a changed mtime are re-read for tag changes
+- If nothing has changed, **no writes are made to the database at all** — the scan is entirely read-only and has no impact on active searches
+- If changes are found, they are written in small batches so individual write-lock windows are milliseconds, not seconds
+
+**Automatic reindex on file changes:**
+- While the container is running, UMS's Java file watcher (inotify) monitors `/media` for any create, modify, or delete events
+- Any such event triggers a debounced reindex — `index_media.py` runs 30 seconds after the last event, collapsing rapid bursts (e.g. copying an album) into a single scan
+- When UMS completes a full media rescan (triggered from the web UI), it also fires a Python reindex so both databases stay in sync
+
+> **NFS/network mount note:** inotify does not fire events for changes made on NFS or SMB mounts by remote machines. If your `/media` is network storage, rely on `UMS_INDEX_REFRESH_MINUTES` as the mechanism for picking up new music — the file watcher will not see remote changes.
+
+### Search and browse routing
+
+- All DLNA `Search()` SOAP requests from renderers are intercepted by `SearchRequestHandler`, which calls `search.py` as a subprocess and expects JSON back
+- `Browse()` requests for synthetic container IDs (e.g. `artist:The Beatles`, `album:The Beatles/Abbey Road`, `playlist:/media/...`) are also delegated to `search.py` — this is what makes drill-down navigation work after clicking a search result
+- All other `Browse()` requests (the normal folder tree) are handled entirely by upstream UMS and are unaffected by this fork
+
+### Cover art
+
+- Embedded cover art is extracted from audio files **once per album** at full-rebuild time and cached as JPEG files in `/profile/cache/covers/`
+- The cache is served via a dedicated `/cover/*` HTTP endpoint on the same port as the DLNA media server
+- Incremental scans extract cover art only for newly added albums — existing cached images are never re-extracted
+
+---
+
+## 🗂️ Profile Directory Layout
+
+The `/profile` volume contains everything that persists across container restarts. It is safe to delete individual subdirectories to force a rebuild of that data:
+
+| Path | Contents | Safe to delete? |
+|------|----------|-----------------|
+| `/profile/UMS.conf` | Main UMS configuration (hostname, server name, shared folders, etc.) | Deleting resets all settings to seed defaults on next start |
+| `/profile/SHARED.conf` | Shared folder definitions | Deleting resets to seed defaults |
+| `/profile/database/media_index.db` | Python SQLite search index | Yes — triggers full rebuild on next start |
+| `/profile/database/` (other files) | UMS's own H2 browse database | Yes — UMS rebuilds it on next start |
+| `/profile/cache/covers/` | Extracted album art cache | Yes — repopulated on next full rebuild |
+
+---
+
+## 🔧 Environment Variables
+
+All variables are injected into `UMS.conf` by the container entrypoint on every start, so they take effect even if the profile volume already exists.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `UMS_HOSTNAME` | *(required)* | Hostname or IP this server advertises in SSDP/UPnP multicast packets. Must be reachable by your DLNA renderers. The entrypoint resolves this to an IP address at startup. |
+| `UMS_SERVER_NAME` | `Universal Media Server` | Friendly name shown to DLNA renderers and clients. |
+| `UMS_INDEX_REFRESH_MINUTES` | `1440` | How often (in minutes) to run an incremental index scan. Set to `0` to disable periodic scans entirely and rely only on the file watcher. For NFS mounts, this is the only mechanism that detects remote changes. |
+| `SEARCH_STRICT_CRITERIA` | `0` | `0` (default): WiiM field-narrowing rules are applied — each search tab is restricted to only the fields that make sense for that result type. `1`: honor the renderer's `SearchCriteria` exactly as sent, with no field filtering. See [DLNA Search Behavior](#-dlna-search-behavior-wiim--renderer-override). |
+| `UMS_PROFILE` | `/profile` | Path inside the container where UMS stores its profile (config, databases, cover cache). Override if you want to mount the profile volume at a different path. |
+
+---
+
+
 
 This project is a fork of [Universal Media Server][10] by the UMS team.
 All core DLNA/UPnP streaming, transcoding, renderer detection, and web UI are upstream UMS code — this fork only adds the search engine and Docker deployment layer.
