@@ -86,9 +86,7 @@ mvn clean package -Dmaven.test.skip=true
 #   image: ums-dlna-search:local
 #   build:
 #     context: /path/to/ums-dlna-search
-#     dockerfile: /path/to/host_service/ums/Dockerfile
-#     additional_contexts:
-#       dockerconfig: /path/to/host_service/ums
+#     dockerfile: src/main/external-resources/docker/Dockerfile
 docker compose build ums && docker compose up -d ums
 ```
 
