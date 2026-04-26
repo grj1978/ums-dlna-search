@@ -13,6 +13,7 @@ This fork replaces UMS's built-in search with a fast, SQLite-backed search engin
 - **Python search engine** — replaces the upstream H2/SQL search with a lightweight SQLite index built by `index_media.py`. Handles artist, album, track, and playlist search tabs.
 - **Album art in search results** — embedded cover art is extracted once per album at index time and served via a dedicated `/cover/*` HTTP endpoint, so album thumbnails appear correctly in search results and playlists.
 - **Playlist support** — `.m3u`/`.m3u8` playlists are indexed and browsable as playlist containers with full track metadata.
+- **"All Tracks" artist container** — when you drill into an artist, an "All Tracks" entry appears at the top of the album list. Selecting it queues the artist's entire discography sorted by album → track number, making it easy to play a complete collection in one action.
 - **WiiM search fix** — the WiiM sends noisy cross-field OR queries (e.g. artist search also matches track titles). By default, this fork restricts each search tab to only the field that makes sense for that result type. See the [DLNA Search Behavior](#-dlna-search-behavior-wiim--renderer-override) section below for details and configuration.
 - **Docker-first deployment** — ships as a single Docker image with no external dependencies beyond a media volume.
 
@@ -161,7 +162,7 @@ The Python search engine maintains a SQLite database (`media_index.db`) that is 
 ### Search and browse routing
 
 - All DLNA `Search()` SOAP requests from renderers are intercepted by `SearchRequestHandler`, which calls `search.py` as a subprocess and expects JSON back
-- `Browse()` requests for synthetic container IDs (e.g. `artist:The Beatles`, `album:The Beatles/Abbey Road`, `playlist:/media/...`) are also delegated to `search.py` — this is what makes drill-down navigation work after clicking a search result
+- `Browse()` requests for synthetic container IDs (e.g. `artist:The Beatles`, `album:The Beatles/Abbey Road`, `allartisttracks:The Beatles`, `playlist:/media/...`) are also delegated to `search.py` — this is what makes drill-down navigation work after clicking a search result. The `allartisttracks:` container returns all audio tracks for the artist sorted by album → track number → title
 - All other `Browse()` requests (the normal folder tree) are handled entirely by upstream UMS and are unaffected by this fork
 
 ### Cover art
