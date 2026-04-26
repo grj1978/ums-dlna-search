@@ -39,6 +39,7 @@ import re
 import html
 import sqlite3
 import mimetypes
+import random
 from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
@@ -387,8 +388,9 @@ use_or_conditions = bool(re.search(r'\bor\b', _criteria_body, re.IGNORECASE))
 # __browse__ mode: Browse into a synthetic artist: or album: container
 # Called from UmsContentDirectoryService when objectID starts with artist:/album:
 # ---------------------------------------------------------------------------
-_BROWSE_ARTIST = '__browse__ artist:'
-_BROWSE_ALBUM  = '__browse__ album:'
+_BROWSE_ARTIST        = '__browse__ artist:'
+_BROWSE_ALBUM         = '__browse__ album:'
+_BROWSE_ALL_TRACKS    = '__browse__ allartisttracks:'
 
 def emit_index_not_ready():
     message_item = (
@@ -407,13 +409,16 @@ def emit_index_not_ready():
 
 _BROWSE_PLAYLIST = '__browse__ playlist:'
 
-if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or criteria.startswith(_BROWSE_PLAYLIST):
-    is_artist   = criteria.startswith(_BROWSE_ARTIST)
-    is_playlist = criteria.startswith(_BROWSE_PLAYLIST)
+if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or criteria.startswith(_BROWSE_PLAYLIST) or criteria.startswith(_BROWSE_ALL_TRACKS):
+    is_artist     = criteria.startswith(_BROWSE_ARTIST)
+    is_playlist   = criteria.startswith(_BROWSE_PLAYLIST)
+    is_all_tracks = criteria.startswith(_BROWSE_ALL_TRACKS)
     if is_playlist:
         subpath = criteria[len(_BROWSE_PLAYLIST):]
     elif is_artist:
         subpath = criteria[len(_BROWSE_ARTIST):]
+    elif is_all_tracks:
+        subpath = criteria[len(_BROWSE_ALL_TRACKS):]
     else:
         subpath = criteria[len(_BROWSE_ALBUM):]
     # Sanitize path traversal. Playlists use absolute filesystem paths so
@@ -421,6 +426,36 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
     subpath = subpath.replace('..', '')
     if not is_playlist:
         subpath = subpath.lstrip('/')
+
+    if is_all_tracks:
+        # Return all audio tracks for this artist, sorted by album then track number then title
+        rows = query_files_by_artist(subpath)
+        if rows is None:
+            emit_index_not_ready()
+        items_out = []
+        for row in rows:
+            mime = row['mime'] or None
+            if not (mime and mime.startswith('audio/')):
+                continue
+            rel          = row['relpath']
+            fn           = row['filename']
+            title        = row['title'] or os.path.splitext(fn)[0]
+            cls          = file_class_for_mime(mime)
+            cover_art    = row['cover_art']
+            items_out.append({
+                'id': rel, 'title': title, 'class': cls, 'url': make_url(rel),
+                'artist': row['artist'], 'album': row['album'],
+                'parent_id': f'allartisttracks:{subpath}',
+                'track_number': row['track_number'],
+                'cover_art_url': find_cover_url(rel, cover_art),
+            })
+        items_out.sort(key=lambda x: (
+            x['album'].lower(),
+            x['track_number'] is None,
+            x['track_number'] or 0,
+            x['title'].lower(),
+        ))
+        emit(len(items_out), items_out, build_didl_tracks)
 
     if is_playlist:
         # Parse the .m3u file and return tracks as items
@@ -486,13 +521,24 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
         emit(len(items_out), items_out, build_didl_tracks)
     elif is_artist:
         # Return album containers for this artist (tag-based, not path-based)
+        # First entry is always a synthetic "All Tracks" container.
         rows = query_files_by_artist(subpath)
         if rows is None:
             emit_index_not_ready()
         album_map = {}
         album_sample_relpath = {}
         album_sample_cover = {}
+        total_audio = 0
+        audio_relpaths_with_cover = []  # (relpath, cover_art) for random art pick
+        fallback_relpath = ''
         for row in rows:
+            mime = row['mime'] or None
+            if mime and mime.startswith('audio/'):
+                total_audio += 1
+                if not fallback_relpath:
+                    fallback_relpath = row['relpath']
+                if row['cover_art']:
+                    audio_relpaths_with_cover.append((row['relpath'], row['cover_art']))
             alb = row['album']
             if not alb:
                 continue
@@ -501,7 +547,21 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
                 album_sample_relpath[alb] = row['relpath']
             if not album_sample_cover.get(alb):
                 album_sample_cover[alb] = row['cover_art']
-        containers = [
+        if audio_relpaths_with_cover:
+            _pick = random.choice(audio_relpaths_with_cover)
+            any_relpath, any_cover = _pick[0], _pick[1]
+        else:
+            any_relpath, any_cover = fallback_relpath, ''
+        all_tracks_container = {
+            'id': f'allartisttracks:{subpath}',
+            'title': 'All Tracks',
+            'class': 'object.container.album.musicAlbum',
+            'parent_id': f'artist:{subpath}',
+            'artist': subpath,
+            'child_count': total_audio,
+            'cover_art_url': find_cover_url(any_relpath, any_cover),
+        }
+        containers = [all_tracks_container] + [
             {'id': f'album:{subpath}/{alb}', 'title': alb,
              'class': 'object.container.album.musicAlbum',
              'parent_id': f'artist:{subpath}', 'artist': subpath, 'child_count': cnt,

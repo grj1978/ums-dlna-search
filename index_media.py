@@ -303,9 +303,15 @@ def full_rebuild():
     total = 0
     started = time.time()
     for fullpath, relpath, mr, fn, mtime, path_artist, path_album, path_title in _walk_media_roots():
-        artist, album_artist, composer, album, title, genre, track_number = read_tags(fullpath, path_artist, path_album, path_title)
         mime, _ = mimetypes.guess_type(fn)
-        if mime and mime.startswith('audio/'):
+        _is_audio = mime and mime.startswith('audio/')
+        artist, album_artist, composer, album, title, genre, track_number = read_tags(
+            fullpath,
+            path_artist if _is_audio else '',
+            path_album  if _is_audio else '',
+            path_title  if _is_audio else '',
+        )
+        if _is_audio:
             album_key = (artist or path_artist, album or path_album)
             if album_key not in covered_albums:
                 cover_art = _extract_embedded_cover(fullpath, album_key[0], album_key[1])
@@ -373,9 +379,15 @@ def incremental_update(conn):
             if mtime == existing_mtime:
                 continue  # unchanged — skip tag reading entirely
             # File changed — re-read tags and update
-            artist, album_artist, composer, album, title, genre, track_number = read_tags(fullpath, path_artist, path_album, path_title)
             mime, _ = mimetypes.guess_type(fn)
-            if mime and mime.startswith('audio/'):
+            _is_audio = mime and mime.startswith('audio/')
+            artist, album_artist, composer, album, title, genre, track_number = read_tags(
+                fullpath,
+                path_artist if _is_audio else '',
+                path_album  if _is_audio else '',
+                path_title  if _is_audio else '',
+            )
+            if _is_audio:
                 cover_art = _extract_embedded_cover(fullpath, artist or path_artist, album or path_album)
                 album_key = (artist or path_artist, album or path_album)
                 ex_ca, ex_g = album_covers.get(album_key, ('', ''))
@@ -383,9 +395,15 @@ def incremental_update(conn):
             to_update.append((artist, album_artist, composer, album, title, genre, fn, relpath, mr, mime or '', track_number, mtime, existing_id))
         else:
             # New file
-            artist, album_artist, composer, album, title, genre, track_number = read_tags(fullpath, path_artist, path_album, path_title)
             mime, _ = mimetypes.guess_type(fn)
-            if mime and mime.startswith('audio/'):
+            _is_audio = mime and mime.startswith('audio/')
+            artist, album_artist, composer, album, title, genre, track_number = read_tags(
+                fullpath,
+                path_artist if _is_audio else '',
+                path_album  if _is_audio else '',
+                path_title  if _is_audio else '',
+            )
+            if _is_audio:
                 cover_art = _extract_embedded_cover(fullpath, artist or path_artist, album or path_album)
                 album_key = (artist or path_artist, album or path_album)
                 ex_ca, ex_g = album_covers.get(album_key, ('', ''))

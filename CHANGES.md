@@ -19,7 +19,10 @@ and synthetic `Browse()` requests for generated container IDs.
   - `audioItem`/`musicTrack` → dc:title field matching only, returns track items
   - `playlistContainer` → name matching against `playlists` table, returns playlist containers
 - Browse mode for synthetic container IDs:
-  - `artist:<name>` → returns album containers for that artist (tag-based)
+  - `artist:<name>` → returns an "All Tracks" container (all audio tracks for the artist,
+    sorted album → track number → title; cover art randomly selected from tracks with embedded
+    art) followed by album containers (tag-based)
+  - `allartisttracks:<name>` → returns all audio tracks for the artist, sorted album → track number → title
   - `album:<artist>/<album>` → returns tracks sorted by track number
   - `playlist:<path>` → parses `.m3u` file, returns tracks with DB metadata lookup
 - All text matching is case-insensitive (`lower(field) LIKE lower(?)`)
@@ -51,7 +54,9 @@ Python script that builds and incrementally maintains the SQLite media index.
 - Incremental updates: only re-reads tags for changed files (mtime check)
 - Playlists table: indexes all `.m3u`/`.m3u8` files found under `MEDIA_ROOTS`
 - Tag reading via `mutagen` (artist, album_artist, composer, album, title, genre, track_number)
-- Path-based fallbacks when tags are missing
+- Path-based fallbacks (folder/filename) used **only for audio files** — non-audio files (images,
+  video) receive empty metadata fields so folder names are never surfaced as phantom album/artist
+  entries in music search results
 - Respects `FOLDER_NAMES_IGNORED` env var
 - Invoked by `PythonBridge` on startup, after UMS media scan, and on a periodic timer
 - **Cover art extraction**: embedded art extracted once per album during full rebuild via `mutagen`;
@@ -155,9 +160,9 @@ Renderer profile for WiiM Pro Plus specifically.
 ## Modified Files
 
 ### `src/main/java/net/pms/network/mediaserver/jupnp/support/contentdirectory/UmsContentDirectoryService.java`
-- **Browse delegation** (line ~769): objectIDs starting with `artist:`, `album:`, or `playlist:`
-  are delegated to `SearchRequestHandler.createSearchResult()` via a synthetic `__browse__` criteria
-  string, bypassing the default UMS browse tree entirely
+- **Browse delegation** (line ~769): objectIDs starting with `artist:`, `album:`, `playlist:`,
+  or `allartisttracks:` are delegated to `SearchRequestHandler.createSearchResult()` via a
+  synthetic `__browse__` criteria string, bypassing the default UMS browse tree entirely
 - **Search delegation** (line ~913): all DLNA `Search()` SOAP calls delegate to
   `SearchRequestHandler.createSearchResult()` via `PythonBridge`
 

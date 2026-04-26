@@ -762,8 +762,8 @@ public class UmsContentDirectoryService {
 			objectID = "0";
 		}
 
-		// Delegate Browse for Python-generated synthetic container IDs (artist:/album:)
-		if (objectID.startsWith("artist:") || objectID.startsWith("album:") || objectID.startsWith("playlist:")) {
+		// Delegate Browse for Python-generated synthetic container IDs (artist:/album:/allartisttracks:)
+		if (objectID.startsWith("artist:") || objectID.startsWith("album:") || objectID.startsWith("playlist:") || objectID.startsWith("allartisttracks:")) {
 			try {
 				String browseCriteria = "__browse__ " + objectID;
 				SearchRequestHandler handler = new SearchRequestHandler();
