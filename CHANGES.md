@@ -51,7 +51,10 @@ Python script that builds and incrementally maintains the SQLite media index.
 | `playlists` | `id`, `name`, `path`, `mtime` |
 
 - Full rebuild triggered on schema version mismatch or first run
-- Incremental updates: only re-reads tags for changed files (mtime check)
+- Incremental updates: only re-reads tags for changed files (mtime check); new files are
+  inserted, deleted files are removed from `files`
+- Orphan pruning: after file deletions, any `albums` row whose last audio track was removed is
+  deleted and its cover art JPEG is removed from `/profile/cache/covers/` on disk
 - Playlists table: indexes all `.m3u`/`.m3u8` files found under `MEDIA_ROOTS`
 - Tag reading via `mutagen` (artist, album_artist, composer, album, title, genre, track_number)
 - Path-based fallbacks (folder/filename) used **only for audio files** — non-audio files (images,

@@ -103,7 +103,22 @@ docker logs -f ums 2>&1 | grep -i "python\|index\|scanned"
 
 ---
 
-## 🔍 DLNA Search Behavior (WiiM / Renderer Override)
+## � Upgrade Notes
+
+> ** Seeing phantom entries?  — delete your index after upgrading**
+>
+> v1.0.1+ introduced fixes to how the index is built and pruned. Any index built by an earlier version may contain phantom entries — albums or artists that appear in search results but have no playable tracks. These entries are not corrected by an incremental scan; a full rebuild is required.
+>
+> After pulling the new image and restarting the container, delete the index to force a clean rebuild:
+> ```bash
+> docker exec ums rm -f /profile/database/media_index.db
+> docker restart ums
+> ```
+> The index will rebuild automatically on startup. For large libraries this takes a minute or two — monitor progress with `docker logs -f ums`.
+
+---
+
+## �🔍 DLNA Search Behavior (WiiM / Renderer Override)
 
 This fork includes a custom Python-based DLNA search backend (`search.py`) that replaces UMS's built-in search engine. It is designed for music libraries and was specifically tuned for the **WiiM** music streamer, which sends DLNA `Search()` SOAP requests with cross-field OR conditions that produce noisy, unhelpful results with a standard DLNA server.
 

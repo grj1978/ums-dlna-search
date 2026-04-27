@@ -439,9 +439,42 @@ def incremental_update(conn):
             [(k[0], k[1], v[0], v[1]) for k, v in album_covers.items()]
         )
         conn.commit()
+    # Capture which albums are affected by deletions before removing the rows
+    albums_to_check = set()
+    if deleted_ids:
+        for i in range(0, len(deleted_ids), BATCH):
+            batch = deleted_ids[i:i + BATCH]
+            placeholders = ','.join('?' * len(batch))
+            rows = conn.execute(
+                f"SELECT DISTINCT artist, album FROM files WHERE id IN ({placeholders})",
+                batch
+            ).fetchall()
+            albums_to_check.update((r[0], r[1]) for r in rows)
     for i in range(0, len(deleted_ids), BATCH):
         conn.executemany("DELETE FROM files WHERE id=?", [(x,) for x in deleted_ids[i:i + BATCH]])
         conn.commit()
+    # Prune albums whose last track was just deleted; remove their cover art files too
+    if albums_to_check:
+        orphaned_albums = []
+        for artist, album in albums_to_check:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM files WHERE artist=? AND album=? AND mime LIKE 'audio/%'",
+                (artist, album)
+            ).fetchone()[0]
+            if count == 0:
+                row = conn.execute(
+                    "SELECT cover_art FROM albums WHERE artist=? AND album=?",
+                    (artist, album)
+                ).fetchone()
+                if row and row[0]:
+                    try:
+                        os.remove(row[0])
+                    except FileNotFoundError:
+                        pass
+                orphaned_albums.append((artist, album))
+        if orphaned_albums:
+            conn.executemany("DELETE FROM albums WHERE artist=? AND album=?", orphaned_albums)
+            conn.commit()
 
     pl_added, pl_updated, pl_removed = rebuild_playlists(conn)
     changed_count = len(to_insert) + len(to_update) + len(deleted_ids) + pl_added + pl_updated + pl_removed

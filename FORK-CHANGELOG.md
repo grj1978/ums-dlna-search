@@ -12,6 +12,19 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.2] – Unreleased
+
+### Added
+- Incremental scan now prunes albums whose last audio track was deleted: removes the `albums`
+  table row and deletes the cover art JPEG from `/profile/cache/covers/` on disk.  Affected
+  albums are identified before the `DELETE FROM files` batch runs, so the cover path is still
+  readable at cleanup time.  Albums with remaining tracks are unaffected.
+
+### Documentation
+- Added **Upgrade Notes** section to README advising a full index rebuild when upgrading from
+  v1.0.1 or earlier — stale phantom entries from prior indexer bugs are not corrected by
+  incremental scans and require a fresh rebuild.
+
 ---
 
 ## [1.0.1] – 2026-04-26
@@ -116,5 +129,6 @@ Initial versioned baseline.  Covers all fork work prior to this date.
 ---
 
 [Unreleased]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/main...HEAD
+[1.0.2]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/UniversalMediaServer/UniversalMediaServer/releases/tag/v1.0.0
