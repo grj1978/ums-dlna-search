@@ -31,6 +31,11 @@ portable/
 .metadata/
 .yarn-integrity
 
+# Python
+__pycache__/
+*.pyc
+.venv/
+
 # react web client
 /react-client/dist/
 /react-client/nbproject/
