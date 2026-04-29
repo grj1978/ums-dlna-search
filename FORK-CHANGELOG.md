@@ -12,6 +12,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+*No changes yet.*
+
 ## [1.1.0] – 2026-04-29
 
 ### Added

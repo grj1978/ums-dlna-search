@@ -58,14 +58,6 @@ services:
       #        with no field filtering applied.
       # - SEARCH_STRICT_CRITERIA=0
 
-      # Accent alias entries. Default: 0 (disabled)
-      # Set to 1 to emit a second accent-stripped alias entry (suffixed [*]) for
-      # any artist, album, or track whose name contains accented characters
-      # (e.g. Jóhann Jóhannsson → Johann Johannsson [*]). The alias shares the
-      # same ID so navigating or playing it resolves to the real content.
-      # Only needed for renderers that cannot display Unicode characters.
-      # - SEARCH_ACCENT_ALIAS=0
-
       # Override the profile directory inside the container. Default: /profile
       # Change this if you want to mount the profile at a different path.
       # - UMS_PROFILE=/profile
@@ -220,7 +212,7 @@ All variables are injected into `UMS.conf` by the container entrypoint on every 
 | `UMS_SERVER_NAME` | `Universal Media Server` | Friendly name shown to DLNA renderers and clients. |
 | `UMS_INDEX_REFRESH_MINUTES` | `1440` | How often (in minutes) to run an incremental index scan. Set to `0` to disable periodic scans entirely and rely only on the file watcher. For NFS mounts, this is the only mechanism that detects remote changes. |
 | `SEARCH_STRICT_CRITERIA` | `0` | `0` (default): WiiM field-narrowing rules are applied — each search tab is restricted to only the fields that make sense for that result type. `1`: honor the renderer's `SearchCriteria` exactly as sent, with no field filtering. See [DLNA Search Behavior](#-dlna-search-behavior-wiim--renderer-override). |
-| `SEARCH_ACCENT_ALIAS` | `0` | `0` (default): disabled. Set to `1` to emit a second accent-stripped alias entry (suffixed `[*]`) for any artist, album, or track whose name contains accented/special characters (e.g. *Jóhann Jóhannsson* → *Johann Johannsson [*]*). The alias shares the same ID so navigating or playing it resolves to the real content. Only needed for renderers that cannot render Unicode. |
+| `SEARCH_ACCENT_ALIAS` | `0` | `0` (default): disabled. Set to `1` to emit a second accent-stripped alias entry (suffixed `[*]`) for any artist, album, or track whose name contains accented/special characters (e.g. *Jóhann Jóhannsson* → *Johann Johannsson [&#42;]*). The alias shares the same ID so navigating or playing it resolves to the real content. Only needed for renderers that cannot render Unicode. |
 | `UMS_PROFILE` | `/profile` | Path inside the container where UMS stores its profile (config, databases, cover cache). Override if you want to mount the profile volume at a different path. |
 
 ---
