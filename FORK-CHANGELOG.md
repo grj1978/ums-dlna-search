@@ -12,7 +12,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.1.0] – Unreleased
+## [1.1.0] – 2026-04-29
 
 ### Added
 - **Release year sorting** — albums are now ordered by release year (ascending) in all contexts
@@ -32,12 +32,41 @@ Versions follow [Semantic Versioning](https://semver.org/).
     `disc_number` column added — see v1.1.0 final schema notes below.
 
 ### Fixed
+- **Accent-insensitive artist/album browse** — browsing into an artist or album whose name
+  contains accented characters (e.g. *Jóhann Jóhannsson*, *Sigur Rós*) now works correctly
+  when the renderer strips accents from container IDs before sending the Browse request (as WiiM
+  does).  `query_files_by_artist` and `query_files_by_album` now use the registered `fold()` SQL
+  function for comparison instead of exact-string equality, so `"Johann Johannsson"` correctly
+  resolves to the accented artist in the DB.
+- **Canonical artist name in browse results** — when browsing an artist via an unaccented ID,
+  album containers and the "All Tracks" container now display the correct accented artist name
+  (resolved from the DB rows) rather than the unaccented ID string.
+- **Accented cover art files not served** — `CoverCacheServlet` returned 404 for any cover art
+  file whose name contained non-ASCII characters (e.g. `Sigur_Rós_Takk_.jpg`).  Root cause:
+  the JVM's native filesystem encoding (`sun.jnu.encoding`) defaulted to ASCII in the container
+  because the OS locale was unset (POSIX/ASCII).  Fixed by setting `ENV LANG=C.UTF-8` in the
+  Dockerfile — this sets the OS locale before the JVM initialises, which is what Java uses to
+  determine `sun.jnu.encoding`.  The `-Dsun.jnu.encoding` JVM flag is silently ignored on
+  Java 17+ Linux and cannot be used as a substitute.
+- **Artist/album search with `dc:title` criteria** — when a renderer sends `dc:title contains
+  "X"` as the only condition for a `musicArtist` or `musicAlbum` search (rather than
+  `upnp:artist` or `upnp:album`), the value is now correctly treated as an artist/album name
+  fragment rather than a track title fragment.  Resolves empty search results on renderers that
+  use `dc:title` to express container-name searches.
 - NFS/network I/O errors (`OSError: [Errno 5]`) on a single file during full rebuild no longer
   crash the entire indexer.  The offending file is skipped with a WARNING log entry and will be
   picked up automatically on the next incremental scan once the mount is healthy.
 - `search.py` now checks the DB schema version before querying; if the DB is outdated (e.g. a
   failed rebuild left a v6 DB in place) it returns "index not ready" instead of crashing with a
   `KeyError` on the missing `year` column.
+
+### Changed
+- **Dockerfile moved to project root** — the `Dockerfile` previously lived outside the project
+  in `host_service/ums/`.  It now lives at the project root (standard convention), so
+  `docker build .` works with no `-f` flag.  The `docker-compose.yml` `dockerfile:` reference
+  has been updated accordingly.  The `host_service/ums/` directory (which contained only
+  now-redundant copies of `entrypoint.sh` and `seed/`) has been removed; the canonical copies
+  in `src/main/external-resources/docker/` are the sole source of truth.
 
 ### Schema (v8)
 - `year` column renamed to `release_date INTEGER` — stores full date as `YYYYMMDD` integer
@@ -146,11 +175,12 @@ Initial versioned baseline.  Covers all fork work prior to this date.
 
 #### Docker deployment (`host_service`)
 - `Dockerfile` — custom image on `ubuntu:22.04`; installs JRE, mediainfo, python3, mutagen;
-  copies `ums.jar`, `search.py`, `index_media.py` directly into image
-- `entrypoint.sh` — seeds `/profile` on first run; resolves `UMS_HOSTNAME` to LAN IP and
-  injects it as `hostname =` in `UMS.conf` at startup
-- `seed/UMS.conf` — minimal UMS config with blank `hostname =` line for entrypoint injection
-- `seed/SHARED.conf` — shares `/media` as the monitored folder
+  copies `ums.jar`, `search.py`, `index_media.py` directly into image. Located in project root.
+- `src/main/external-resources/docker/entrypoint.sh` — seeds `/profile` on first run; resolves
+  `UMS_HOSTNAME` to LAN IP and injects it as `hostname =` in `UMS.conf` at startup
+- `src/main/external-resources/docker/seed/UMS.conf` — minimal UMS config with blank `hostname =`
+  line for entrypoint injection
+- `src/main/external-resources/docker/seed/SHARED.conf` — shares `/media` as the monitored folder
 
 #### Configuration keys
 | Key | Default | Description |
@@ -165,8 +195,8 @@ Initial versioned baseline.  Covers all fork work prior to this date.
 
 ---
 
-[Unreleased]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/main...HEAD
-[1.1.0]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/v1.0.2...v1.1.0
+[Unreleased]: https://github.com/grj1978/ums-dlna-search/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/grj1978/ums-dlna-search/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/UniversalMediaServer/UniversalMediaServer/releases/tag/v1.0.0

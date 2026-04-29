@@ -41,13 +41,13 @@ and synthetic `Browse()` requests for generated container IDs.
 ### `index_media.py`
 Python script that builds and incrementally maintains the SQLite media index.
 
-**Schema v7** (`/profile/database/media_index.db`):
+**Schema v8** (`/profile/database/media_index.db`):
 
 | Table | Columns |
 |---|---|
 | `metadata` | `key`, `value` |
-| `files` | `id`, `artist`, `album_artist`, `composer`, `album`, `title`, `genre`, `filename`, `relpath`, `fullpath`, `media_root`, `mime`, `track_number`, `year`, `mtime` |
-| `albums` | `artist`, `album`, `cover_art`, `genre`, `year` (PRIMARY KEY: `artist`, `album`) |
+| `files` | `id`, `artist`, `album_artist`, `composer`, `album`, `title`, `genre`, `filename`, `relpath`, `fullpath`, `media_root`, `mime`, `track_number`, `disc_number`, `release_date`, `mtime` |
+| `albums` | `artist`, `album`, `cover_art`, `genre`, `release_date` (PRIMARY KEY: `artist`, `album`) |
 | `playlists` | `id`, `name`, `path`, `mtime` |
 
 - Full rebuild triggered on schema version mismatch or first run
@@ -56,9 +56,11 @@ Python script that builds and incrementally maintains the SQLite media index.
 - Orphan pruning: after file deletions, any `albums` row whose last audio track was removed is
   deleted and its cover art JPEG is removed from `/profile/cache/covers/` on disk
 - Playlists table: indexes all `.m3u`/`.m3u8` files found under `MEDIA_ROOTS`
-- Tag reading via `mutagen` (artist, album_artist, composer, album, title, genre, track_number, year)
-- `year` extracted from the `date` tag (first 4-digit match); stored in `files.year` and
-  `albums.year`; best (non-null) year wins per album across incremental upserts
+- Tag reading via `mutagen` (artist, album_artist, composer, album, title, genre, track_number, disc_number, release_date)
+- `release_date` extracted from the `date` tag as a `YYYYMMDD` integer (e.g. `20030512`;
+  `20030500` if no day; `20030000` if year only); stored in `files.release_date` and
+  `albums.release_date`; best (non-null) value wins per album across incremental upserts
+- `disc_number` read from the `discnumber` mutagen tag; tracks sort by disc → track → title
 - Path-based fallbacks (folder/filename) used **only for audio files** — non-audio files (images,
   video) receive empty metadata fields so folder names are never surfaced as phantom album/artist
   entries in music search results
@@ -123,8 +125,8 @@ Default shared folder configuration baked into the Docker image.
 
 ## Docker Deployment (`host_service` stack)
 
-### `host_service/ums/Dockerfile`
-Custom image based on `ubuntu:22.04`. Replaces the upstream `universalmediaserver/ums:latest` image.
+### `Dockerfile`
+Custom image based on `ubuntu:22.04`. Replaces the upstream `universalmediaserver/ums:latest` image. Located in the project root.
 
 - Installs: `openjdk-17-jre-headless`, `mediainfo`, `fonts-dejavu`, `python3`, `mutagen`, `dnsutils`
 - No `ffmpeg`/`mplayer` — transcoding not needed for WiiM devices serving native FLAC
@@ -140,7 +142,7 @@ Custom image based on `ubuntu:22.04`. Replaces the upstream `universalmediaserve
   - `/profile/database/media_index.db` — SQLite search index
   - `/profile/cache/covers/` — extracted album art JPEGs (`<artist>_<album>.jpg`)
 
-### `host_service/ums/entrypoint.sh`
+### `src/main/external-resources/docker/entrypoint.sh`
 Runs before starting UMS to handle runtime configuration:
 
 1. **Profile seeding** — on first run (empty `/profile` volume), copies `seed/UMS.conf` and `seed/SHARED.conf` into `/profile`
@@ -148,11 +150,11 @@ Runs before starting UMS to handle runtime configuration:
 
 UMS must advertise a bare IP address (not a hostname) in SSDP/UPnP packets for DLNA clients to connect back correctly. Using a DNS name like `ums.int` in compose allows the IP to change without updating the compose file — the container resolves it fresh on every start.
 
-### `host_service/ums/seed/UMS.conf`
+### `src/main/external-resources/docker/seed/UMS.conf`
 Minimal UMS config seeded on first run. Contains a blank `hostname =` line that `entrypoint.sh` populates at startup.
 
-### `host_service/ums/seed/SHARED.conf`
-Shares `/media` as the single monitored folder. Mirrors `src/main/external-resources/docker/profile/SHARED.conf`.
+### `src/main/external-resources/docker/seed/SHARED.conf`
+Shares `/media` as the single monitored folder.
 
 ### `src/main/external-resources/renderers/Linkplay-WiiM-ProPlus.conf`
 Renderer profile for WiiM Pro Plus specifically.
