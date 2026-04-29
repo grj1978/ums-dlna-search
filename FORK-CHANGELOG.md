@@ -12,7 +12,44 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.0.2] – Unreleased
+## [1.1.0] – Unreleased
+
+### Added
+- **Release year sorting** — albums are now ordered by release year (ascending) in all contexts
+  where album order is determined: artist browse album list, "All Tracks" container, and album
+  search results.  Albums with no year tag are sorted alphabetically and placed after all
+  dated albums.  Within a year, albums are sorted alphabetically as a tiebreaker.
+- **Accent alias entries** (`SEARCH_ACCENT_ALIAS`, default disabled) — when enabled, a second
+  accent-stripped alias entry (suffixed `[*]`) is created for any artist, album, or track whose
+  name contains accented/special characters (e.g. *Jóhann Jóhannsson* → *Johann Johannsson [*]*).
+  The alias shares the same container/item ID so drilling in or playing it resolves to the real
+  content.  Covers artist browse, album browse under an artist, album search results, track search
+  results, and the All Tracks container.  Enable with `SEARCH_ACCENT_ALIAS=1` in your compose
+  environment.  Only needed for renderers that genuinely cannot render Unicode.
+- `year` column added to `files` and `albums` tables (schema v7); read from the `date` mutagen
+  tag (4-digit year extracted).  Schema bump triggers a full index rebuild on next start.
+  - **Schema v8** supersedes this: `year` renamed to `release_date` (YYYYMMDD integer),
+    `disc_number` column added — see v1.1.0 final schema notes below.
+
+### Fixed
+- NFS/network I/O errors (`OSError: [Errno 5]`) on a single file during full rebuild no longer
+  crash the entire indexer.  The offending file is skipped with a WARNING log entry and will be
+  picked up automatically on the next incremental scan once the mount is healthy.
+- `search.py` now checks the DB schema version before querying; if the DB is outdated (e.g. a
+  failed rebuild left a v6 DB in place) it returns "index not ready" instead of crashing with a
+  `KeyError` on the missing `year` column.
+
+### Schema (v8)
+- `year` column renamed to `release_date INTEGER` — stores full date as `YYYYMMDD` integer
+  (e.g. `2003-05-12` → `20030512`, `2003-05` → `20030500`, `2003` → `20030000`).  Handles all
+  ISO 8601 / ID3 date formats up to day resolution; sub-day fields (time) are ignored.
+- `disc_number INTEGER` added to `files` table; read from the `discnumber` mutagen tag.
+  Track listings now sort by disc → track → title; "All Tracks" sorts album (by date) → disc → track → title.
+  Tracks with no disc tag are treated as disc 1 (not sorted last).
+
+---
+
+## [1.0.2] – 2026-04-27
 
 ### Added
 - Incremental scan now prunes albums whose last audio track was deleted: removes the `albums`
@@ -63,7 +100,7 @@ Initial versioned baseline.  Covers all fork work prior to this date.
   - `artist:<name>` → returns album containers (tag-based)
   - `album:<artist>/<album>` → returns tracks sorted by track number
   - `playlist:<path>` → parses `.m3u`, returns tracks with DB metadata lookup
-- Cover art URLs emitted as `<upnp:albumArtURI>` in all DIDL track and album responses
+- Cover art URLs added as `<upnp:albumArtURI>` in all DIDL track and album responses
 - `find_cover_url()` resolves cover cache path to HTTP URL via `CoverCacheServlet`, falling
   back to folder image scan
 - WiiM field-narrowing: each search class restricted to only semantically relevant fields,
@@ -129,6 +166,7 @@ Initial versioned baseline.  Covers all fork work prior to this date.
 ---
 
 [Unreleased]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/main...HEAD
+[1.1.0]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/UniversalMediaServer/UniversalMediaServer/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/UniversalMediaServer/UniversalMediaServer/releases/tag/v1.0.0

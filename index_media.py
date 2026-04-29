@@ -36,6 +36,7 @@ import sqlite3
 import mimetypes
 import re
 import time
+import unicodedata
 
 try:
     from mutagen import File as MutagenFile
@@ -46,7 +47,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "8"
 
 PLAYLIST_EXTS = {'.m3u', '.m3u8'}
 
@@ -99,6 +100,8 @@ CREATE TABLE IF NOT EXISTS files (
     media_root   TEXT NOT NULL,
     mime         TEXT NOT NULL DEFAULT '',
     track_number INTEGER,
+    disc_number  INTEGER,
+    release_date INTEGER,
     mtime        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_artist       ON files (artist       COLLATE NOCASE);
@@ -111,8 +114,9 @@ CREATE INDEX IF NOT EXISTS idx_relpath      ON files (relpath);
 CREATE TABLE IF NOT EXISTS albums (
     artist    TEXT NOT NULL DEFAULT '',
     album     TEXT NOT NULL DEFAULT '',
-    cover_art TEXT NOT NULL DEFAULT '',
-    genre     TEXT NOT NULL DEFAULT '',
+    cover_art    TEXT NOT NULL DEFAULT '',
+    genre        TEXT NOT NULL DEFAULT '',
+    release_date INTEGER,
     PRIMARY KEY (artist, album)
 );
 CREATE TABLE IF NOT EXISTS playlists (
@@ -181,9 +185,12 @@ def _extract_embedded_cover(fullpath, artist, album):
 
 
 def read_tags(fullpath, path_artist, path_album, path_title):
-    """Read ID3/FLAC/etc tags via mutagen; return (artist, album_artist, composer, album, title, genre, track_number)."""
-    artist, album_artist, composer, album, title, genre, track_number = (
-        path_artist, '', '', path_album, path_title, '', None
+    """Read ID3/FLAC/etc tags via mutagen.
+    Returns (artist, album_artist, composer, album, title, genre, track_number, disc_number, release_date).
+    release_date is an integer in YYYYMMDD form (e.g. 20030512, or 20030500 if no day, 20030000 if year only).
+    """
+    artist, album_artist, composer, album, title, genre, track_number, disc_number, release_date = (
+        path_artist, '', '', path_album, path_title, '', None, None, None
     )
     if MUTAGEN_AVAILABLE:
         try:
@@ -200,9 +207,24 @@ def read_tags(fullpath, path_artist, path_album, path_title):
                     m = re.match(r'(\d+)', str(tn_raw))
                     if m:
                         track_number = int(m.group(1))
+                dn_raw = (tags.get('discnumber') or [''])[0]
+                if dn_raw:
+                    m = re.match(r'(\d+)', str(dn_raw))
+                    if m:
+                        disc_number = int(m.group(1))
+                date_raw = (tags.get('date') or [''])[0]
+                if date_raw:
+                    m = re.match(r'(\d{4})[-/]?(\d{2})?[-/]?(\d{2})?', str(date_raw))
+                    if m:
+                        y  = int(m.group(1))
+                        mo = int(m.group(2)) if m.group(2) else 0
+                        d  = int(m.group(3)) if m.group(3) else 0
+                        release_date = y * 10000 + mo * 100 + d
         except Exception:
             pass  # corrupt/unreadable file — use path fallbacks
-    return artist, album_artist, composer, album, title, genre, track_number
+    _n = lambda s: unicodedata.normalize('NFC', s) if s else s
+    return (_n(artist), _n(album_artist), _n(composer), _n(album), _n(title), _n(genre),
+            track_number, disc_number, release_date)
 
 
 def _walk_media_roots():
@@ -223,14 +245,19 @@ def _walk_media_roots():
                 fullpath = os.path.join(dirpath, fn)
                 relpath  = os.path.relpath(fullpath, mr).replace(os.sep, '/')
                 parts    = relpath.split('/')
+                _nfc = lambda s: unicodedata.normalize('NFC', s) if s else s
                 if len(parts) > 2:
-                    path_artist, path_album = parts[0], parts[1]
+                    path_artist, path_album = _nfc(parts[0]), _nfc(parts[1])
                 elif len(parts) == 2:
-                    path_artist, path_album = parts[0], ''
+                    path_artist, path_album = _nfc(parts[0]), ''
                 else:
                     path_artist, path_album = '', ''
-                path_title = os.path.splitext(fn)[0]
-                mtime = int(os.stat(fullpath).st_mtime)
+                path_title = _nfc(os.path.splitext(fn)[0])
+                try:
+                    mtime = int(os.stat(fullpath).st_mtime)
+                except OSError as e:
+                    print(f"WARNING: skipping unreadable file {fullpath}: {e}", flush=True)
+                    continue
                 yield fullpath, relpath, mr, fn, mtime, path_artist, path_album, path_title
 
 
@@ -297,7 +324,7 @@ def full_rebuild():
 
     # Track which (artist, album) pairs have already had cover art extracted
     # so we only extract once per album during a full rebuild.
-    covered_albums = {}  # album_key → (cover_art, genre)
+    covered_albums = {}  # album_key → (cover_art, genre, release_date)
 
     rows = []
     total = 0
@@ -305,7 +332,7 @@ def full_rebuild():
     for fullpath, relpath, mr, fn, mtime, path_artist, path_album, path_title in _walk_media_roots():
         mime, _ = mimetypes.guess_type(fn)
         _is_audio = mime and mime.startswith('audio/')
-        artist, album_artist, composer, album, title, genre, track_number = read_tags(
+        artist, album_artist, composer, album, title, genre, track_number, disc_number, release_date = read_tags(
             fullpath,
             path_artist if _is_audio else '',
             path_album  if _is_audio else '',
@@ -315,22 +342,27 @@ def full_rebuild():
             album_key = (artist or path_artist, album or path_album)
             if album_key not in covered_albums:
                 cover_art = _extract_embedded_cover(fullpath, album_key[0], album_key[1])
-                covered_albums[album_key] = (cover_art, genre)  # store even if empty so we don't retry
-            elif not covered_albums[album_key][1] and genre:
-                covered_albums[album_key] = (covered_albums[album_key][0], genre)
-        rows.append((artist, album_artist, composer, album, title, genre, fn, relpath, fullpath, mr, mime or '', track_number, mtime))
+                covered_albums[album_key] = (cover_art, genre, release_date)
+            else:
+                ex_cover, ex_genre, ex_rd = covered_albums[album_key]
+                covered_albums[album_key] = (
+                    ex_cover,
+                    genre if genre else ex_genre,
+                    release_date if release_date and not ex_rd else ex_rd,
+                )
+        rows.append((artist, album_artist, composer, album, title, genre, fn, relpath, fullpath, mr, mime or '', track_number, disc_number, release_date, mtime))
         total += 1
         if verbose and total % 1000 == 0:
             print(f"Scanned {total} files in {time.time()-started:.1f}s ...", flush=True)
 
     tmp_conn.executemany(
-        "INSERT INTO files (artist, album_artist, composer, album, title, genre, filename, relpath, fullpath, media_root, mime, track_number, mtime) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO files (artist, album_artist, composer, album, title, genre, filename, relpath, fullpath, media_root, mime, track_number, disc_number, release_date, mtime) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rows
     )
     tmp_conn.executemany(
-        "INSERT OR REPLACE INTO albums (artist, album, cover_art, genre) VALUES (?, ?, ?, ?)",
-        [(k[0], k[1], v[0], v[1]) for k, v in covered_albums.items()]
+        "INSERT OR REPLACE INTO albums (artist, album, cover_art, genre, release_date) VALUES (?, ?, ?, ?, ?)",
+        [(k[0], k[1], v[0], v[1], v[2]) for k, v in covered_albums.items()]
     )
     tmp_conn.execute("INSERT OR REPLACE INTO metadata VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
     tmp_conn.execute("INSERT OR REPLACE INTO metadata VALUES ('indexed_at',      ?)", (str(int(time.time())),))
@@ -365,7 +397,7 @@ def incremental_update(conn):
     seen_fullpaths = set()
     to_insert = []
     to_update = []
-    album_covers = {}  # album_key → (cover_art, genre) for albums with new/changed tracks
+    album_covers = {}  # album_key → (cover_art, genre, release_date) for albums with new/changed tracks
     scanned = 0
 
     for fullpath, relpath, mr, fn, mtime, path_artist, path_album, path_title in _walk_media_roots():
@@ -381,7 +413,7 @@ def incremental_update(conn):
             # File changed — re-read tags and update
             mime, _ = mimetypes.guess_type(fn)
             _is_audio = mime and mime.startswith('audio/')
-            artist, album_artist, composer, album, title, genre, track_number = read_tags(
+            artist, album_artist, composer, album, title, genre, track_number, disc_number, release_date = read_tags(
                 fullpath,
                 path_artist if _is_audio else '',
                 path_album  if _is_audio else '',
@@ -390,14 +422,18 @@ def incremental_update(conn):
             if _is_audio:
                 cover_art = _extract_embedded_cover(fullpath, artist or path_artist, album or path_album)
                 album_key = (artist or path_artist, album or path_album)
-                ex_ca, ex_g = album_covers.get(album_key, ('', ''))
-                album_covers[album_key] = (cover_art if cover_art else ex_ca, genre if genre else ex_g)
-            to_update.append((artist, album_artist, composer, album, title, genre, fn, relpath, mr, mime or '', track_number, mtime, existing_id))
+                ex_ca, ex_g, ex_rd = album_covers.get(album_key, ('', '', None))
+                album_covers[album_key] = (
+                    cover_art if cover_art else ex_ca,
+                    genre if genre else ex_g,
+                    release_date if release_date and not ex_rd else ex_rd,
+                )
+            to_update.append((artist, album_artist, composer, album, title, genre, fn, relpath, mr, mime or '', track_number, disc_number, release_date, mtime, existing_id))
         else:
             # New file
             mime, _ = mimetypes.guess_type(fn)
             _is_audio = mime and mime.startswith('audio/')
-            artist, album_artist, composer, album, title, genre, track_number = read_tags(
+            artist, album_artist, composer, album, title, genre, track_number, disc_number, release_date = read_tags(
                 fullpath,
                 path_artist if _is_audio else '',
                 path_album  if _is_audio else '',
@@ -406,9 +442,13 @@ def incremental_update(conn):
             if _is_audio:
                 cover_art = _extract_embedded_cover(fullpath, artist or path_artist, album or path_album)
                 album_key = (artist or path_artist, album or path_album)
-                ex_ca, ex_g = album_covers.get(album_key, ('', ''))
-                album_covers[album_key] = (cover_art if cover_art else ex_ca, genre if genre else ex_g)
-            to_insert.append((artist, album_artist, composer, album, title, genre, fn, relpath, fullpath, mr, mime or '', track_number, mtime))
+                ex_ca, ex_g, ex_rd = album_covers.get(album_key, ('', '', None))
+                album_covers[album_key] = (
+                    cover_art if cover_art else ex_ca,
+                    genre if genre else ex_g,
+                    release_date if release_date and not ex_rd else ex_rd,
+                )
+            to_insert.append((artist, album_artist, composer, album, title, genre, fn, relpath, fullpath, mr, mime or '', track_number, disc_number, release_date, mtime))
 
     # Files in DB that no longer exist on disk
     deleted_ids = [existing[fp][0] for fp in existing if fp not in seen_fullpaths]
@@ -418,25 +458,26 @@ def incremental_update(conn):
     BATCH = 500
     for i in range(0, len(to_insert), BATCH):
         conn.executemany(
-            "INSERT INTO files (artist, album_artist, composer, album, title, genre, filename, relpath, fullpath, media_root, mime, track_number, mtime) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO files (artist, album_artist, composer, album, title, genre, filename, relpath, fullpath, media_root, mime, track_number, disc_number, release_date, mtime) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             to_insert[i:i + BATCH]
         )
         conn.commit()
     for i in range(0, len(to_update), BATCH):
         conn.executemany(
             "UPDATE files SET artist=?, album_artist=?, composer=?, album=?, title=?, genre=?, "
-            "filename=?, relpath=?, media_root=?, mime=?, track_number=?, mtime=? WHERE id=?",
+            "filename=?, relpath=?, media_root=?, mime=?, track_number=?, disc_number=?, release_date=?, mtime=? WHERE id=?",
             to_update[i:i + BATCH]
         )
         conn.commit()
     if album_covers:
         conn.executemany(
-            "INSERT INTO albums (artist, album, cover_art, genre) VALUES (?, ?, ?, ?)"
+            "INSERT INTO albums (artist, album, cover_art, genre, release_date) VALUES (?, ?, ?, ?, ?)"
             " ON CONFLICT(artist, album) DO UPDATE SET"
             " cover_art = CASE WHEN excluded.cover_art != '' THEN excluded.cover_art ELSE cover_art END,"
-            " genre = CASE WHEN excluded.genre != '' THEN excluded.genre ELSE genre END",
-            [(k[0], k[1], v[0], v[1]) for k, v in album_covers.items()]
+            " genre = CASE WHEN excluded.genre != '' THEN excluded.genre ELSE genre END,"
+            " release_date = CASE WHEN excluded.release_date IS NOT NULL THEN excluded.release_date ELSE release_date END",
+            [(k[0], k[1], v[0], v[1], v[2]) for k, v in album_covers.items()]
         )
         conn.commit()
     # Capture which albums are affected by deletions before removing the rows

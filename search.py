@@ -30,6 +30,9 @@ Config (environment variables):
 - UMS_MEDIA_HOST / UMS_MEDIA_PORT: used to build resource URLs
 - SEARCH_STRICT_CRITERIA: set to "true"/"1"/"yes" to honor renderer criteria as-is;
   when unset or "false" the WiiM field-narrowing rules are applied (default)
+- SEARCH_ACCENT_ALIAS: set to "0"/"false"/"no" to disable accent-alias entries;
+  when unset or "1" (default), a second entry with accent-stripped title (+ ' [*]')
+  is created for any artist/album/track whose name contains accented characters
 """
 
 import sys
@@ -40,6 +43,7 @@ import html
 import sqlite3
 import mimetypes
 import random
+import unicodedata
 from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
@@ -77,6 +81,12 @@ COVER_CACHE = os.environ.get('COVER_CACHE_DIR', '')
 # the fields that make sense for that result type.
 # Set SEARCH_STRICT_CRITERIA=1 to enable; 0 or unset = WiiM filtering (default).
 STRICT_SEARCH = os.environ.get('SEARCH_STRICT_CRITERIA', '0').strip() not in ('', '0', 'false', 'no')
+
+# When True, creates an additional entry with accent-stripped title (suffixed ' [*]')
+# for any artist, album, or track whose name contains accented/special characters.
+# Only needed for renderers that cannot render Unicode.  Disabled by default.
+# Enable with SEARCH_ACCENT_ALIAS=1.
+ACCENT_ALIAS = os.environ.get('SEARCH_ACCENT_ALIAS', '0').strip() not in ('', '0', 'false', 'no')
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -141,16 +151,73 @@ def path_parts(relpath):
     filename = parts[-1]
     return artist, album, filename
 
+
+def fold_accents(s):
+    """Normalize a string for accent-insensitive matching and sorting.
+    Lowercases, then strips combining diacritical marks via NFD decomposition.
+    Examples: 'Jóhann' → 'johann', 'Björk' → 'bjork', 'Ñoño' → 'nono'
+    """
+    if not s:
+        return s or ''
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', s.lower())
+        if unicodedata.category(c) != 'Mn'
+    )
+
+
+def _accent_alias_containers(containers, sort_key=None):
+    """If ACCENT_ALIAS is enabled, append a folded-title alias entry for every container
+    whose title contains accented characters.  The alias shares the same ``id`` so
+    drilling into it resolves to the same real content.  ``sort_key``, when supplied,
+    is used to re-sort the combined list.
+    """
+    if not ACCENT_ALIAS:
+        return containers
+    aliases = [
+        {**c, 'title': fold_accents(c['title']) + ' [*]'}
+        for c in containers
+        if fold_accents(c['title']) != c['title'].lower()
+    ]
+    if not aliases:
+        return containers
+    combined = containers + aliases
+    if sort_key:
+        combined.sort(key=sort_key)
+    return combined
+
+
+def _accent_alias_items(items_out):
+    """If ACCENT_ALIAS is enabled, append a folded-title alias item for every track
+    whose title contains accented characters.  The alias shares the same ``id``/``url``
+    so it plays the correct file.
+    """
+    if not ACCENT_ALIAS:
+        return items_out
+    aliases = [
+        {**item, 'title': fold_accents(item['title']) + ' [*]'}
+        for item in items_out
+        if fold_accents(item['title']) != item['title'].lower()
+    ]
+    return items_out + aliases
+
+
 # ---------------------------------------------------------------------------
 # Index access
 # ---------------------------------------------------------------------------
+SEARCH_SCHEMA_VERSION = "8"
+
 def open_db():
-    """Open the SQLite index read-only.  Returns None if the DB doesn't exist."""
+    """Open the SQLite index read-only.  Returns None if the DB doesn't exist or schema is outdated."""
     if not os.path.exists(DB_PATH):
         return None
     try:
         conn = sqlite3.connect(f'file:{DB_PATH}?mode=ro', uri=True, timeout=1.0)
         conn.row_factory = sqlite3.Row
+        conn.create_function('fold', 1, lambda s: fold_accents(s) if s else '')
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        if row is None or row[0] != SEARCH_SCHEMA_VERSION:
+            conn.close()
+            return None
         return conn
     except sqlite3.OperationalError:
         return None
@@ -158,22 +225,22 @@ def open_db():
 
 def _condition_sql(field, value):
     """Return (sql_fragment, value) for a single field/value condition."""
-    val = f'%{value}%'
+    val = f'%{fold_accents(value)}%'
     if field == 'upnp:artist':
-        return ("(lower(f.artist) LIKE lower(?) OR lower(f.album_artist) LIKE lower(?))", [val, val])
+        return ("(fold(f.artist) LIKE ? OR fold(f.album_artist) LIKE ?)", [val, val])
     elif field == 'upnp:albumartist':
-        return ("lower(f.album_artist) LIKE lower(?)", val)
+        return ("fold(f.album_artist) LIKE ?", val)
     elif field == 'dc:creator':
         # dc:creator is used for both artist and composer depending on renderer
-        return ("(lower(f.artist) LIKE lower(?) OR lower(f.composer) LIKE lower(?))", [val, val])
+        return ("(fold(f.artist) LIKE ? OR fold(f.composer) LIKE ?)", [val, val])
     elif field == 'upnp:album':
-        return ("lower(f.album) LIKE lower(?)", val)
+        return ("fold(f.album) LIKE ?", val)
     elif field == 'dc:title':
-        return ("lower(f.title) LIKE lower(?)", val)
+        return ("fold(f.title) LIKE ?", val)
     elif field == 'upnp:genre':
-        return ("lower(f.genre) LIKE lower(?)", val)
+        return ("fold(f.genre) LIKE ?", val)
     else:
-        return ("lower(f.title) LIKE lower(?)", val)
+        return ("fold(f.title) LIKE ?", val)
 
 
 def query_files(conditions, use_or):
@@ -247,8 +314,8 @@ def query_playlists(name_fragment):
         return None
     try:
         return conn.execute(
-            "SELECT * FROM playlists WHERE lower(name) LIKE lower(?)",
-            (f'%{name_fragment}%',)
+            "SELECT * FROM playlists WHERE fold(name) LIKE ?",
+            (f'%{fold_accents(name_fragment)}%',)
         ).fetchall()
     except Exception:
         return []
@@ -303,6 +370,15 @@ def query_files_by_album(artist, album):
         return None
     finally:
         conn.close()
+
+
+def _album_sort_key(release_date, album):
+    """Sort key for album ordering: release_date ascending (no date sorts last), then alphabetical.
+    release_date is an integer in YYYYMMDD form (e.g. 20030512).
+    """
+    no_date = release_date is None or release_date == 0
+    return (no_date, release_date or 0, fold_accents(album))
+
 
 # ---------------------------------------------------------------------------
 # DIDL builders
@@ -447,14 +523,18 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
                 'artist': row['artist'], 'album': row['album'],
                 'parent_id': f'allartisttracks:{subpath}',
                 'track_number': row['track_number'],
+                'disc_number': row['disc_number'],
+                'release_date': row['release_date'],
                 'cover_art_url': find_cover_url(rel, cover_art),
             })
         items_out.sort(key=lambda x: (
-            x['album'].lower(),
+            *_album_sort_key(x['release_date'], x['album']),
+            x['disc_number'] or 1,
             x['track_number'] is None,
             x['track_number'] or 0,
             x['title'].lower(),
         ))
+        items_out = _accent_alias_items(items_out)
         emit(len(items_out), items_out, build_didl_tracks)
 
     if is_playlist:
@@ -528,6 +608,7 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
         album_map = {}
         album_sample_relpath = {}
         album_sample_cover = {}
+        album_year = {}
         total_audio = 0
         audio_relpaths_with_cover = []  # (relpath, cover_art) for random art pick
         fallback_relpath = ''
@@ -547,6 +628,8 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
                 album_sample_relpath[alb] = row['relpath']
             if not album_sample_cover.get(alb):
                 album_sample_cover[alb] = row['cover_art']
+            if alb not in album_year and row['release_date']:
+                album_year[alb] = row['release_date']
         if audio_relpaths_with_cover:
             _pick = random.choice(audio_relpaths_with_cover)
             any_relpath, any_cover = _pick[0], _pick[1]
@@ -566,8 +649,9 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
              'class': 'object.container.album.musicAlbum',
              'parent_id': f'artist:{subpath}', 'artist': subpath, 'child_count': cnt,
              'cover_art_url': find_cover_url(album_sample_relpath.get(alb, ''), album_sample_cover.get(alb, ''))}
-            for alb, cnt in sorted(album_map.items())
+            for alb, cnt in sorted(album_map.items(), key=lambda x: _album_sort_key(album_year.get(x[0]), x[0]))
         ]
+        containers = _accent_alias_containers(containers)
         emit(len(containers), containers, build_didl_containers)
     else:
         # Return tracks for this album (artist/album both from tag)
@@ -588,15 +672,22 @@ if criteria.startswith(_BROWSE_ARTIST) or criteria.startswith(_BROWSE_ALBUM) or 
             mime         = row['mime'] or None
             cls          = file_class_for_mime(mime)
             track_number = row['track_number']
+            disc_number  = row['disc_number']
             cover_art    = row['cover_art']
             items_out.append({
                 'id': rel, 'title': title, 'class': cls, 'url': make_url(rel),
                 'artist': artist, 'album': album,
                 'parent_id': f'album:{subpath}',
                 'track_number': track_number,
+                'disc_number': disc_number,
                 'cover_art_url': find_cover_url(rel, cover_art),
             })
-        items_out.sort(key=lambda x: (x['track_number'] is None, x['track_number'] or 0, x['title']))
+        items_out.sort(key=lambda x: (
+            x['disc_number'] or 1,
+            x['track_number'] is None, x['track_number'] or 0,
+            x['title'],
+        ))
+        items_out = _accent_alias_items(items_out)
         emit(len(items_out), items_out, build_didl_tracks)
 
 # ---------------------------------------------------------------------------
@@ -630,7 +721,7 @@ if requested_class and 'playlistcontainer' in requested_class.lower():
                 'parent_id': '0',
                 'child_count': 0,
             })
-    containers.sort(key=lambda c: c['title'].lower())
+    containers.sort(key=lambda c: fold_accents(c['title']))
     emit(len(containers), containers, build_didl_containers)
 
 # ---------------------------------------------------------------------------
@@ -649,15 +740,29 @@ if requested_class and 'musicartist' in requested_class.lower():
                 emit_index_not_ready()
     artist_map = {}
     for row in rows:
-        # Surface both artist and album_artist as separate artist entries
-        for a in filter(None, {row['artist'], row['album_artist']}):
+        # Use album_artist when present (avoids polluting the list with per-track
+        # guest artists on compilations/collaborations); fall back to artist.
+        a = row['album_artist'] or row['artist']
+        if a:
             artist_map[a] = artist_map.get(a, 0) + 1
+
+    # Fold-merge: collapse variants that differ only by accents/casing
+    # (e.g. 'Jóhann Jóhannsson' and 'Johann Johannsson' from mis-tagged files)
+    # Keep the variant with the most tracks; sum the counts.
+    fold_groups = {}
+    for a, cnt in artist_map.items():
+        fold_groups.setdefault(fold_accents(a), []).append((a, cnt))
+    artist_map = {}
+    for variants in fold_groups.values():
+        canonical = max(variants, key=lambda x: x[1])[0]
+        artist_map[canonical] = sum(c for _, c in variants)
 
     containers = [
         {'id': f'artist:{a}', 'title': a, 'class': 'object.container.person.musicArtist',
          'parent_id': '0', 'child_count': cnt}
-        for a, cnt in sorted(artist_map.items())
+        for a, cnt in sorted(artist_map.items(), key=lambda x: fold_accents(x[0]))
     ]
+    containers = _accent_alias_containers(containers, lambda c: fold_accents(c['title']))
     emit(len(containers), containers, build_didl_containers)
 
 # ---------------------------------------------------------------------------
@@ -674,6 +779,7 @@ if requested_class and 'musicalbum' in requested_class.lower():
     album_map = {}
     album_sample_relpath = {}
     album_sample_cover = {}
+    album_year = {}
     for row in rows:
         artist = row['artist']
         album  = row['album']
@@ -685,14 +791,17 @@ if requested_class and 'musicalbum' in requested_class.lower():
             album_sample_relpath[key] = row['relpath']
         if not album_sample_cover.get(key):
             album_sample_cover[key] = row['cover_art']
+        if key not in album_year and row['release_date']:
+            album_year[key] = row['release_date']
 
     containers = [
         {'id': f'album:{a}/{alb}', 'title': alb,
          'class': 'object.container.album.musicAlbum',
          'parent_id': f'artist:{a}', 'artist': a, 'child_count': cnt,
          'cover_art_url': find_cover_url(album_sample_relpath.get((a, alb), ''), album_sample_cover.get((a, alb), ''))}
-        for (a, alb), cnt in sorted(album_map.items())
+        for (a, alb), cnt in sorted(album_map.items(), key=lambda x: _album_sort_key(album_year.get(x[0]), x[0][1]))
     ]
+    containers = _accent_alias_containers(containers)
     emit(len(containers), containers, build_didl_containers)
 
 # ---------------------------------------------------------------------------
@@ -727,4 +836,5 @@ for row in rows:
         'cover_art_url': find_cover_url(rel, cover_art),
     })
 
+items_out = _accent_alias_items(items_out)
 emit(len(items_out), items_out, build_didl_tracks)

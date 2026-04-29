@@ -20,8 +20,8 @@ and synthetic `Browse()` requests for generated container IDs.
   - `playlistContainer` → name matching against `playlists` table, returns playlist containers
 - Browse mode for synthetic container IDs:
   - `artist:<name>` → returns an "All Tracks" container (all audio tracks for the artist,
-    sorted album → track number → title; cover art randomly selected from tracks with embedded
-    art) followed by album containers (tag-based)
+    sorted by year → album alphabetically → track number → title; albums with no year sort last)
+    followed by album containers sorted by year → album alphabetically (no-year albums last)
   - `allartisttracks:<name>` → returns all audio tracks for the artist, sorted album → track number → title
   - `album:<artist>/<album>` → returns tracks sorted by track number
   - `playlist:<path>` → parses `.m3u` file, returns tracks with DB metadata lookup
@@ -41,13 +41,13 @@ and synthetic `Browse()` requests for generated container IDs.
 ### `index_media.py`
 Python script that builds and incrementally maintains the SQLite media index.
 
-**Schema v6** (`/profile/database/media_index.db`):
+**Schema v7** (`/profile/database/media_index.db`):
 
 | Table | Columns |
 |---|---|
 | `metadata` | `key`, `value` |
-| `files` | `id`, `artist`, `album_artist`, `composer`, `album`, `title`, `genre`, `filename`, `relpath`, `fullpath`, `media_root`, `mime`, `track_number`, `mtime` |
-| `albums` | `artist`, `album`, `cover_art`, `genre` (PRIMARY KEY: `artist`, `album`) |
+| `files` | `id`, `artist`, `album_artist`, `composer`, `album`, `title`, `genre`, `filename`, `relpath`, `fullpath`, `media_root`, `mime`, `track_number`, `year`, `mtime` |
+| `albums` | `artist`, `album`, `cover_art`, `genre`, `year` (PRIMARY KEY: `artist`, `album`) |
 | `playlists` | `id`, `name`, `path`, `mtime` |
 
 - Full rebuild triggered on schema version mismatch or first run
@@ -56,7 +56,9 @@ Python script that builds and incrementally maintains the SQLite media index.
 - Orphan pruning: after file deletions, any `albums` row whose last audio track was removed is
   deleted and its cover art JPEG is removed from `/profile/cache/covers/` on disk
 - Playlists table: indexes all `.m3u`/`.m3u8` files found under `MEDIA_ROOTS`
-- Tag reading via `mutagen` (artist, album_artist, composer, album, title, genre, track_number)
+- Tag reading via `mutagen` (artist, album_artist, composer, album, title, genre, track_number, year)
+- `year` extracted from the `date` tag (first 4-digit match); stored in `files.year` and
+  `albums.year`; best (non-null) year wins per album across incremental upserts
 - Path-based fallbacks (folder/filename) used **only for audio files** — non-audio files (images,
   video) receive empty metadata fields so folder names are never surfaced as phantom album/artist
   entries in music search results
