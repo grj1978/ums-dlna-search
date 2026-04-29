@@ -58,6 +58,14 @@ services:
       #        with no field filtering applied.
       # - SEARCH_STRICT_CRITERIA=0
 
+      # Accent alias entries. Default: 0 (disabled)
+      # Set to 1 to emit a second accent-stripped alias entry (suffixed [*]) for
+      # any artist, album, or track whose name contains accented characters
+      # (e.g. Jóhann Jóhannsson → Johann Johannsson [*]). The alias shares the
+      # same ID so navigating or playing it resolves to the real content.
+      # Only needed for renderers that cannot display Unicode characters.
+      # - SEARCH_ACCENT_ALIAS=0
+
       # Override the profile directory inside the container. Default: /profile
       # Change this if you want to mount the profile at a different path.
       # - UMS_PROFILE=/profile
